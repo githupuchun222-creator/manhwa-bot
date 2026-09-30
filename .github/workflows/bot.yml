@@ -51,6 +51,8 @@ jobs:
           FREE_CHAPTERS: "1"
           # Buyurtma dizayni (shop.py): 6 tugmali menyu, bosqichli buyurtma, Buyurtmalarim, /admin panel
           SHOP_UI: "1"
+          # Navbatsiz: bir vaqtda 3 ta ish, bo'sh foydalanuvchi oldinga (bot.py _pick_job)
+          PARALLEL_JOBS: "3"
           OWNER_USERNAME: sharofovsaid
           # 20 MB dan katta fayllar (bigfile.py, MTProto)
           TG_API_ID: ${{ secrets.TG_API_ID }}

@@ -1,4 +1,5 @@
 import asyncio
+import contextvars
 import html
 import io
 import logging
@@ -78,7 +79,14 @@ _waiting: list[dict] = []                 # navbatda kutayotganlar (o'rin ko'rsa
 _current: dict = {"job": None}           # hozir bajarilayotgan ish
 MAX_QUEUE_PER_USER = 30
 _job_counter = {"n": 0}
-_ai_semaphore = asyncio.Semaphore(1)
+# PARALLEL (2026-10-01, foydalanuvchi: "navbat degan narsani olib tashla, hammaga bir xil xizmat
+# qilsin"): bir vaqtda PARALLEL_JOBS ta ish bajariladi (GitHub runner 4 yadro -> 3). Keyingi ish
+# tanlanganda hozir ishi bajarilmayotgan foydalanuvchi oldinga o'tadi - bitta odamning 30 ta fayli
+# boshqalarni kutdirib qo'ymaydi. 1 - avvalgi tartib (birma-bir navbat).
+PARALLEL_JOBS = max(1, int(os.getenv("PARALLEL_JOBS", "1")))
+_ai_semaphore = asyncio.Semaphore(PARALLEL_JOBS)
+_active: list[dict] = []                  # hozir bajarilayotgan ishlar
+_job_var: contextvars.ContextVar = contextvars.ContextVar("job", default=None)
 
 
 MENU_BUTTON = "🏠 Menyu"
@@ -419,8 +427,8 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await start(update, context)        # begona: ruxsat so'rash oqimi
         return
     lines = ["Bot: ishlayapti ✅"]
-    busy = "hozir 1 ta ish bajarilyapti" if _current["job"] else "bo'sh"
-    lines.append(f"Navbat: {busy}, kutayotganlar: {len(_waiting)} ta")
+    busy = f"hozir {len(_active)} ta ish bajarilyapti" if _active else "bo'sh"
+    lines.append(f"Ishlar: {busy}" + (f", boshlanishini kutayotganlar: {len(_waiting)} ta" if _waiting else ""))
 
     # Asosiy o'qish dvigateli (tezkor OCR)
     try:
@@ -649,9 +657,12 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # NAVBAT: avval ikkinchi fayl "kuting" deb rad etilardi va bitta bob ishlanayotganda
     # bot boshqa hech qanday xabarga javob bermasdi. Endi har bir fayl navbatga
     # qo'yiladi va ular kelish tartibida birma-bir bajariladi.
-    ahead = len(_waiting) + (1 if _current["job"] else 0)
-    text = ("Qabul qilindi, boshlanmoqda..." if ahead == 0 else
-            f"Navbatga qo'yildi ⏳ Oldingizda {ahead} ta ish bor — navbat kelganda o'zim boshlayman.")
+    ahead = len(_waiting) + len(_active)
+    if PARALLEL_JOBS > 1:
+        text = "✅ Qabul qilindi - tarjima boshlanmoqda..."
+    else:
+        text = ("Qabul qilindi, boshlanmoqda..." if ahead == 0 else
+                f"Navbatga qo'yildi ⏳ Oldingizda {ahead} ta ish bor — navbat kelganda o'zim boshlayman.")
     _job_counter["n"] += 1
     fname = (msg.document.file_name if msg.document else None) or "rasm"
     job = {"update": update, "context": context, "user": user_id, "id": _job_counter["n"],
@@ -813,8 +824,9 @@ async def paid_list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 def _mark_delivered() -> None:
-    if _current["job"] is not None:
-        _current["job"]["delivered"] = True
+    job = _job_var.get() or _current["job"]
+    if job is not None:
+        job["delivered"] = True
 
 
 def _after_markup() -> InlineKeyboardMarkup | None:
@@ -836,17 +848,35 @@ def _refund(job: dict) -> None:
             logger.exception("Bepul bob hisobi qaytarilmadi")
 
 
+def _pick_job() -> dict | None:
+    """Keyingi ish: hozir ishi bajarilmayotgan foydalanuvchiniki birinchi (adolatli)."""
+    busy = {j["user"] for j in _active}
+    for job in _waiting:
+        if job["user"] not in busy:
+            return job
+    return _waiting[0] if _waiting else None
+
+
 async def _queue_worker() -> None:
-    """Navbatdagi ishlarni kelish tartibida birma-bir bajaradi."""
+    """PARALLEL_JOBS ta ishchi: har biri bo'shashi bilan keyingi ishni oladi."""
+    await asyncio.gather(*(_worker_loop() for _ in range(PARALLEL_JOBS)))
+
+
+async def _worker_loop() -> None:
     while True:
-        job = await _queue.get()
-        if job in _waiting:
-            _waiting.remove(job)
+        await _queue.get()                     # har ish uchun bitta signal
+        job = _pick_job()
+        if job is None:                         # bekor qilingan ishning signali
+            _queue.task_done()
+            continue
+        _waiting.remove(job)
         if job.get("cancelled"):               # /navbat orqali bekor qilingan
             _refund(job)
             _queue.task_done()
             continue
+        _active.append(job)
         _current["job"] = job
+        _job_var.set(job)
         await _refresh_positions()
         try:
             if job.get("order"):
@@ -854,14 +884,16 @@ async def _queue_worker() -> None:
             else:
                 await _process_photo(job["update"], job["context"], job["status"])
         except Exception:
-            logger.exception("Navbatdagi ish xatosi (user=%s)", job["user"])
+            logger.exception("Ish xatosi (user=%s)", job["user"])
             _refund(job)
             await _edit_status(job["status"], "Kechirasiz, kutilmagan xatolik yuz berdi.")
         finally:
             if not job.get("delivered"):
                 _refund(job)            # natija yetib bormadi - bepul bob sarflanmaydi
             shop.finish_order(job)
-            _current["job"] = None
+            _active.remove(job)
+            _current["job"] = _active[-1] if _active else None
+            _job_var.set(None)
             _queue.task_done()
 
 
@@ -873,8 +905,7 @@ async def queue_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     sup = admins.is_superadmin(user_id)
     see_all = admins.is_admin(user_id)
     lines, buttons = [], []
-    cur = _current["job"]
-    if cur:
+    for cur in _active:
         mine = see_all or cur["user"] == user_id
         lines.append(f"▶️ Hozir: {cur['name']} ({cur['who']})" if mine else "▶️ Hozir: boshqa foydalanuvchi ishi")
     for pos, job in enumerate(_waiting, start=1):
@@ -913,7 +944,9 @@ async def on_queue_button(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def _refresh_positions() -> None:
-    """Kutayotganlarga yangi o'rnini ko'rsatadi."""
+    """Kutayotganlarga yangi o'rnini ko'rsatadi (parallel rejimda - kerak emas)."""
+    if PARALLEL_JOBS > 1:
+        return
     for pos, job in enumerate(list(_waiting), start=1):
         await _edit_status(job["status"],
                            f"Navbatda ⏳ Oldingizda {pos} ta ish bor — navbat kelganda o'zim boshlayman.")
@@ -1080,7 +1113,8 @@ async def _process_pdf(update: Update | None, context: ContextTypes.DEFAULT_TYPE
 
 async def _process_photo(update: Update, context: ContextTypes.DEFAULT_TYPE, status_msg) -> None:
     chat_id = update.effective_chat.id
-    await _edit_status(status_msg, "Navbatingiz keldi — yuklab olinmoqda...")
+    await _edit_status(status_msg, "Yuklab olinmoqda..." if PARALLEL_JOBS > 1 else
+                       "Navbatingiz keldi — yuklab olinmoqda...")
     typing_task = asyncio.create_task(_keep_typing(context.bot, chat_id))
 
     try:
@@ -1106,8 +1140,20 @@ async def _process_photo(update: Update, context: ContextTypes.DEFAULT_TYPE, sta
             file_bytes = buf.getvalue()
         logger.info("Fayl yuklandi: %.0f KB", len(file_bytes) / 1024)
 
-        # PDF bo'lsa - har bir sahifa alohida tarjima qilinadi
         doc = update.message.document
+        # ZIP/CBZ - ichidagi rasmlar/PDF'lar bitta bob (PDF) qilib yig'iladi
+        if doc is not None and pdf_utils.is_zip(file_bytes, getattr(doc, "file_name", None),
+                                                getattr(doc, "mime_type", None)):
+            try:
+                zpages = await asyncio.to_thread(pdf_utils.zip_pages, file_bytes, MAX_PDF_PAGES)
+            except pdf_utils.PdfError as exc:
+                await status_msg.edit_text(str(exc))
+                return
+            await _edit_status(status_msg, f"ZIP ochildi: {len(zpages)} ta sahifa.")
+            pdf = await asyncio.to_thread(pdf_utils.build_pdf, zpages)
+            await _process_pdf(update, context, pdf, status_msg)
+            return
+        # PDF bo'lsa - har bir sahifa alohida tarjima qilinadi
         if pdf_utils.is_pdf(file_bytes, getattr(doc, "file_name", None),
                             getattr(doc, "mime_type", None)):
             await _process_pdf(update, context, file_bytes, status_msg)
@@ -1304,7 +1350,10 @@ def _build_app(token: str) -> Application:
         | filters.Document.FileExtension("jpg", case_sensitive=False)
         | filters.Document.FileExtension("jpeg", case_sensitive=False)
         | filters.Document.FileExtension("png", case_sensitive=False)
-        | filters.Document.FileExtension("webp", case_sensitive=False), handle_photo))
+        | filters.Document.FileExtension("webp", case_sensitive=False)
+        | filters.Document.ZIP
+        | filters.Document.FileExtension("zip", case_sensitive=False)
+        | filters.Document.FileExtension("cbz", case_sensitive=False), handle_photo))
     # Qolgan hamma narsa (buyruqlardan tashqari) - jim qolmaslik uchun
     app.add_handler(MessageHandler(~filters.COMMAND, handle_other))
     app.add_handler(CallbackQueryHandler(on_queue_button, pattern=r"^qcancel:"))
@@ -1405,7 +1454,7 @@ async def _run_reserve() -> None:
                 break
         logger.info("Telefon qaytdi - yangi xabar olish to'xtatildi, navbat tugatilmoqda")
         await app.updater.stop()            # yangi xabarni endi telefon oladi
-        while _waiting or _current["job"]:  # qabul qilingan ishlar yarimda qolmasin
+        while _waiting or _active:  # qabul qilingan ishlar yarimda qolmasin
             await asyncio.sleep(5)
         await _tell_owner(app, "📱 Telefon qaytdi — bot yana telefonda ishlayapti.")
         await _stop_app(app)

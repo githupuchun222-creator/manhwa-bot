@@ -158,3 +158,56 @@ def is_pdf(data: bytes, filename: str | None = None, mime: str | None = None) ->
     if filename and filename.lower().endswith(".pdf"):
         return True
     return data[:5] == b"%PDF-"
+
+
+# ZIP / CBZ (2026-10-01, foydalanuvchi: "zipni ham o'qisin"): arxiv ichidagi rasmlar va PDF'lar
+# fayl nomi bo'yicha TABIIY tartibda (2.jpg < 10.jpg) bitta bobga yig'iladi.
+_IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif")
+MAX_ZIP_UNPACKED = 700 * 1024 * 1024      # "zip bomba"dan himoya
+
+
+def is_zip(data: bytes, filename: str | None = None, mime: str | None = None) -> bool:
+    if data[:4] == b"PK\x03\x04":
+        return True
+    name = (filename or "").lower()
+    return name.endswith((".zip", ".cbz")) or "zip" in (mime or "").lower()
+
+
+def _natural_key(name: str):
+    import re
+    return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", name)]
+
+
+def zip_pages(data: bytes, max_pages: int = DEFAULT_MAX_PAGES) -> list[bytes]:
+    """ZIP ichidagi sahifalarni JPEG sifatida qaytaradi (tartib - nom bo'yicha)."""
+    import zipfile
+
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(data))
+    except zipfile.BadZipFile as exc:
+        raise PdfError(f"ZIP ochilmadi: {exc}") from exc
+    names = [i for i in zf.infolist() if not i.is_dir()
+             and not i.filename.startswith("__MACOSX") and not i.filename.rsplit("/", 1)[-1].startswith(".")]
+    if sum(i.file_size for i in names) > MAX_ZIP_UNPACKED:
+        raise PdfError("ZIP ichidagi fayllar juda katta (700 MB dan ortiq).")
+    names.sort(key=lambda i: _natural_key(i.filename))
+    pages: list[bytes] = []
+    for info in names:
+        if len(pages) >= max_pages:
+            break
+        low = info.filename.lower()
+        raw = zf.read(info)
+        if low.endswith(".pdf"):
+            for _, _, jpeg in render_pages(raw, max_pages - len(pages)):
+                pages.append(jpeg)
+        elif low.endswith(_IMG_EXT):
+            try:
+                with Image.open(io.BytesIO(raw)) as im:
+                    buf = io.BytesIO()
+                    im.convert("RGB").save(buf, format="JPEG", quality=95)
+                    pages.append(buf.getvalue())
+            except Exception as exc:
+                logger.warning("ZIP ichidagi rasm o'qilmadi (%s): %s", info.filename, exc)
+    if not pages:
+        raise PdfError("ZIP ichida rasm yoki PDF topilmadi.")
+    return pages

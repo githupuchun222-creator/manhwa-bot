@@ -46,7 +46,7 @@ LANG_NAME = dict(SRC_LANGS + TGT_LANGS)
 MAX_FILES = int(os.getenv("MAX_ORDER_FILES", "80"))
 
 ST_QUEUED, ST_WORK, ST_DONE, ST_CANCEL, ST_FAIL = (
-    "Navbatda", "Tarjima qilinmoqda", "Yetkazildi", "Bekor qilindi", "Xatolik")
+    "Qabul qilindi", "Tarjima qilinmoqda", "Yetkazildi", "Bekor qilindi", "Xatolik")
 ST_ICON = {ST_QUEUED: "⏳", ST_WORK: "⚙️", ST_DONE: "✅", ST_CANCEL: "❌", ST_FAIL: "⚠️"}
 
 
@@ -163,7 +163,7 @@ async def _reply(update: Update, text: str, markup=None, edit: bool = False) -> 
 def _limits_text() -> str:
     big = B.bigfile.MAX_BIG_BYTES // 2**20 if B.bigfile.enabled() else 20
     return (f"• Bir buyurtmada eng ko‘pi <b>{B.MAX_PDF_PAGES}</b> sahifa\n"
-            f"• Bitta fayl <b>{big} MB</b> gacha (PDF, JPG, PNG, WEBP)\n"
+            f"• Bitta fayl <b>{big} MB</b> gacha (PDF, ZIP/CBZ, JPG, PNG, WEBP)\n"
             f"• Sifat yo‘qolmasligi uchun rasmlarni <b>fayl</b> sifatida yuborgan yaxshi")
 
 
@@ -227,7 +227,7 @@ async def show_help(update: Update, context, edit=False) -> None:
             "matn yoziladi). Bitta rasm yuborilsa - tarjima qilingan rasm.\n\n"
             "<b>Cheklovlar:</b>\n" + _limits_text() + "\n\n"
             "Xato ko‘rsangiz - natija ostidagi <b>✏️ Xato haqida yozish</b> tugmasi.\n"
-            "Buyruqlar: /start - menyu, /navbat - navbat, /id - ID'ingiz")
+            "Buyruqlar: /start - menyu, /id - ID'ingiz")
     await _reply(update, text, None, edit)
 
 
@@ -321,7 +321,7 @@ async def _ask_step(update: Update, draft: dict, edit: bool = False) -> None:
         await _reply(update, "4/6 · Qaysi tilga tarjima qilinsin?", InlineKeyboardMarkup(
             rows + [[_ib("⬅️ Orqaga", "sh:back")], CANCEL_ROW]), edit)
     elif step == "upload":
-        await _reply(update, "5/6 · <b>Bob sahifalarini yuboring</b> - PDF yoki rasmlar (albom ham bo‘ladi).\n\n"
+        await _reply(update, "5/6 · <b>Bob sahifalarini yuboring</b> - PDF, ZIP yoki rasmlar (albom ham bo‘ladi).\n\n"
                      + _limits_text() + "\n\nHammasini yuborib bo‘lgach <b>✅ Yuklash tugadi</b> ni bosing.",
                      _upload_markup(draft), edit)
     elif step == "note":
@@ -350,8 +350,10 @@ def _summary(uid: int, d: dict) -> str:
     kind = {"mavjud": "🎁 <b>bepul</b> (bepul bobingiz ishlatiladi)",
             "cheksiz": "💳 obuna / admin - cheklovsiz"}.get(st, "admin bilan kelishuv kerak")
     pdfs = sum(1 for f in d["files"] if f["kind"] == "pdf")
-    imgs = len(d["files"]) - pdfs
-    parts = ([f"{pdfs} ta PDF"] if pdfs else []) + ([f"{imgs} ta rasm"] if imgs else [])
+    zips = sum(1 for f in d["files"] if f["kind"] == "zip")
+    imgs = len(d["files"]) - pdfs - zips
+    parts = (([f"{pdfs} ta PDF"] if pdfs else []) + ([f"{zips} ta ZIP"] if zips else [])
+             + ([f"{imgs} ta rasm"] if imgs else []))
     return ("🧾 <b>Buyurtmani tekshiring</b>\n\n"
             f"📚 Manhwa: <b>{html.escape(d['title'])}</b>\n"
             f"🔢 Bob: <b>{html.escape(d['chapter'])}</b>\n"
@@ -433,10 +435,12 @@ async def on_file(update: Update, context) -> bool:
         await msg.reply_text(f"⚠️ Bir buyurtmada eng ko‘pi {MAX_FILES} ta fayl.")
         return True
     name = getattr(msg.document, "file_name", None) if msg.document else None
-    is_pdf = bool(msg.document) and (("pdf" in (msg.document.mime_type or "").lower())
-                                     or (name or "").lower().endswith(".pdf"))
+    mime = (getattr(msg.document, "mime_type", "") or "").lower() if msg.document else ""
+    low = (name or "").lower()
+    kind = ("pdf" if "pdf" in mime or low.endswith(".pdf") else
+            "zip" if "zip" in mime or low.endswith((".zip", ".cbz")) else "img")
     draft["files"].append({"id": item.file_id, "mid": msg.message_id, "size": size,
-                           "kind": "pdf" if is_pdf else "img", "name": name or ""})
+                           "kind": kind, "name": name or ""})
     draft["files"].sort(key=lambda f: f["mid"])          # albom aralash kelsa ham tartib saqlanadi
     _put_draft(uid, draft)
     # Bitta holat xabari yangilanadi (har faylga yangi xabar - chat to'lib ketardi)
@@ -539,7 +543,7 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     elif act == "upreset":
         draft["files"] = []
     elif act == "uplist":
-        lines = [f"{i}. {'📄 PDF' if f['kind'] == 'pdf' else '🖼 rasm'} {html.escape(f['name'])} "
+        lines = [f"{i}. {'📄 PDF' if f['kind'] == 'pdf' else '🗜 ZIP' if f['kind'] == 'zip' else '🖼 rasm'} {html.escape(f['name'])} "
                  f"({f['size'] / 2**20:.1f} MB)" for i, f in enumerate(draft["files"], 1)]
         await update.effective_message.reply_text("📋 <b>Yuborilgan tartib:</b>\n" + "\n".join(lines),
                                                   parse_mode="HTML")
@@ -597,10 +601,10 @@ async def _confirm(update: Update, context, draft: dict, nonce: str) -> None:
 
 
 async def enqueue_order(context, order: dict, charged: bool) -> None:
-    ahead = len(B._waiting) + (1 if B._current["job"] else 0)
+    ahead = len(B._waiting) + len(B._active)
     status = await context.bot.send_message(
-        order["uid"], f"🧾 {order['ref']}: " + ("tarjima boshlanmoqda..." if ahead == 0 else
-                                                f"navbatda ⏳ Oldingizda {ahead} ta ish bor."))
+        order["uid"], f"🧾 {order['ref']}: " + ("tarjima boshlanmoqda..." if ahead < B.PARALLEL_JOBS else
+                                                "qabul qilindi ⏳ tarjima tez orada boshlanadi."))
     B._job_counter["n"] += 1
     job = {"update": None, "context": context, "user": order["uid"], "id": B._job_counter["n"],
            "name": f"{order['title']} {order['chapter']} ({order['ref']})", "who": order["who"],
@@ -667,7 +671,9 @@ async def process_order(job: dict) -> None:
             buf = io.BytesIO()
             await tg_file.download_to_memory(out=buf)
             data = buf.getvalue()
-        if f["kind"] == "pdf" or B.pdf_utils.is_pdf(data):
+        if f["kind"] == "zip" or B.pdf_utils.is_zip(data, f.get("name")):
+            pages += B.pdf_utils.zip_pages(data, B.MAX_PDF_PAGES)
+        elif f["kind"] == "pdf" or B.pdf_utils.is_pdf(data):
             for _, _, jpeg in B.pdf_utils.render_pages(data, B.MAX_PDF_PAGES):
                 pages.append(jpeg)
         else:
@@ -717,7 +723,7 @@ async def admin_panel(update: Update, context, edit=False) -> None:
     subs = sum(1 for _, t in admins.list_paid() if t > time.time())
     text = ("⚙️ <b>Admin panel</b>\n\n"
             f"🆕 Oxirgi 24 soatda buyurtma: <b>{sum(1 for o in orders if o['created'] > today)}</b>\n"
-            f"⏳ Navbatda: <b>{cnt[ST_QUEUED]}</b> · ⚙️ Ishlanmoqda: <b>{cnt[ST_WORK]}</b>\n"
+            f"⏳ Kutilmoqda: <b>{cnt[ST_QUEUED]}</b> · ⚙️ Ishlanmoqda: <b>{cnt[ST_WORK]}</b>\n"
             f"✅ Yetkazilgan: <b>{cnt[ST_DONE]}</b> · ⚠️ Xato: <b>{cnt[ST_FAIL]}</b> · "
             f"❌ Bekor: <b>{cnt[ST_CANCEL]}</b>\n"
             f"🎁 Bepul bob ishlatganlar: <b>{len(data.get('used', {}))}</b>\n"
@@ -794,7 +800,7 @@ async def admin_button(update: Update, context, parts: list[str]) -> None:
             _set_order(o["ref"], status=ST_QUEUED)
             _log(uid, "qayta ishlashga yubordi", o["ref"])
             await enqueue_order(context, get_order(o["ref"]), charged)
-            await update.effective_message.reply_text(f"🔁 {o['ref']} navbatga qo‘yildi.")
+            await update.effective_message.reply_text(f"🔁 {o['ref']} qayta ishga tushirildi.")
     elif act == "acancel":
         _log(uid, "bekor qildi", parts[2])
         await _user_cancel(update, context, parts[2])
