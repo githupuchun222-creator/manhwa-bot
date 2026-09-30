@@ -3,6 +3,7 @@ import html
 import io
 import logging
 import os
+import sys
 import time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -21,6 +22,7 @@ from telegram.ext import (
 
 import admins
 import bigfile
+import shop
 import pdf_utils
 import uz_translate
 from config import BASE_DIR, BOT_SUFFIX, BOT_TOKEN, OWNER_ID
@@ -95,6 +97,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "So'rovingiz bot egasiga yuborildi — ruxsat berilsa, xabar keladi."
         )
         await _ask_owner_to_allow(context, update.effective_user)
+        return
+    if shop.ENABLED:
+        context.user_data.pop("await_inq", None)
+        context.user_data.pop("await_adm", None)
+        await shop.start(update, context)
         return
     # Pastdagi doimiy tugma - menyu yo'qolib ketsa ham bir bosishda qaytadi
     await update.effective_message.reply_text(
@@ -247,6 +254,9 @@ async def on_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not admins.is_superadmin(update.effective_user.id):
         await update.effective_message.reply_text("Bu bo'lim faqat bot egasi uchun.")
+        return
+    if shop.ENABLED:
+        await shop.admin_panel(update, context)
         return
     text, markup = _screen("admins", update.effective_user.id)
     await update.effective_message.reply_text(text, reply_markup=markup, parse_mode="HTML")
@@ -599,6 +609,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await _ask_owner_to_allow(context, update.effective_user)
         return
 
+    if shop.ENABLED and await shop.on_file(update, context):
+        return
+
     # Fayl sifatida katta bo'lsa - navbatga qo'ymasdan darhol aytamiz
     photo = msg.photo[-1] if msg.photo else msg.document
     size = getattr(photo, "file_size", None) or 0
@@ -836,7 +849,10 @@ async def _queue_worker() -> None:
         _current["job"] = job
         await _refresh_positions()
         try:
-            await _process_photo(job["update"], job["context"], job["status"])
+            if job.get("order"):
+                await shop.process_order(job)
+            else:
+                await _process_photo(job["update"], job["context"], job["status"])
         except Exception:
             logger.exception("Navbatdagi ish xatosi (user=%s)", job["user"])
             _refund(job)
@@ -844,6 +860,7 @@ async def _queue_worker() -> None:
         finally:
             if not job.get("delivered"):
                 _refund(job)            # natija yetib bormadi - bepul bob sarflanmaydi
+            shop.finish_order(job)
             _current["job"] = None
             _queue.task_done()
 
@@ -956,16 +973,18 @@ def _archive(job: str, name: str, data: bytes) -> None:
         logger.warning("Arxivga saqlanmadi: %s", exc)
 
 
-async def _process_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE,
-                       pdf_bytes: bytes, status_msg) -> None:
+async def _process_pdf(update: Update | None, context: ContextTypes.DEFAULT_TYPE,
+                       pdf_bytes: bytes, status_msg, chat_id: int | None = None,
+                       src_name: str | None = None, ref: str | None = None) -> None:
     """PDF bobni to'liq tarjima qilib, BITTA PDF qilib qaytaradi (<= 50 MB).
 
     Avval har sahifa alohida rasm bo'lib yuborilardi - foydalanuvchi bitta
     fayl so'radi.
     """
-    chat_id = update.effective_chat.id
-    doc = update.message.document
-    src_name = (getattr(doc, "file_name", None) or "bob.pdf").rsplit(".", 1)[0]
+    if update is not None:
+        chat_id = update.effective_chat.id
+        doc = update.message.document
+        src_name = (getattr(doc, "file_name", None) or "bob.pdf").rsplit(".", 1)[0]
     job = time.strftime("%Y%m%d-%H%M%S")
     _archive(job, "kirish.pdf", pdf_bytes)
 
@@ -1028,7 +1047,8 @@ async def _process_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE,
     _archive(job, "natija.pdf", result_pdf)
     elapsed = int(time.time() - t0)
 
-    caption = (f"Tarjima tayyor: {limit} sahifa, {texts} ta matn.\n"
+    caption = ((f"🧾 Buyurtma {ref}\n" if ref else "") +
+               f"Tarjima tayyor: {limit} sahifa, {texts} ta matn.\n"
                f"Hajm: {len(result_pdf) / 1024 / 1024:.1f} MB ({size_note}), "
                f"vaqt: {elapsed // 60}:{elapsed % 60:02d}.")
     if failed:
@@ -1046,7 +1066,7 @@ async def _process_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 caption=caption,
                 # katta faylni sekin internetda yuklash uchun uzoqroq kutish
                 write_timeout=900, read_timeout=300,
-                reply_markup=_after_markup(),
+                reply_markup=shop.after_markup(ref) if shop.ENABLED else _after_markup(),
             )
             _mark_delivered()
             break
@@ -1136,12 +1156,12 @@ async def _send_result(context: ContextTypes.DEFAULT_TYPE, chat_id: int, image_b
                     chat_id=chat_id,
                     document=io.BytesIO(image_bytes),
                     filename="tarjima.jpg",
-                    caption=caption, reply_markup=_after_markup(),
+                    caption=caption, reply_markup=shop.after_markup(None) if shop.ENABLED else _after_markup(),
                 )
             else:
                 await context.bot.send_photo(
                     chat_id=chat_id, photo=io.BytesIO(image_bytes), caption=caption,
-                    reply_markup=_after_markup(),
+                    reply_markup=shop.after_markup(None) if shop.ENABLED else _after_markup(),
                 )
             return
         except RetryAfter as exc:
@@ -1206,6 +1226,8 @@ async def handle_other(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                              reply_markup=InlineKeyboardMarkup([[_btn("📝 Qoidalar", "m:qoidalar"),
                                                                  _btn("🏠 Menyu", "m:main")]]))
         return
+    if shop.ENABLED and msg.text and admins.is_allowed(user_id) and await shop.on_text(update, context):
+        return
 
     if not admins.is_allowed(user_id):
         await msg.reply_text(
@@ -1246,6 +1268,7 @@ TG_API_BASE = os.getenv("TG_API_BASE", "").rstrip("/")
 
 
 def _build_app(token: str) -> Application:
+    shop.B = sys.modules[__name__]           # buyurtma moduli navbat/konveyerdan foydalanadi
     builder = Application.builder()
     if TG_API_BASE:
         builder = builder.base_url(f"{TG_API_BASE}/bot").base_file_url(f"{TG_API_BASE}/file/bot")
@@ -1286,6 +1309,7 @@ def _build_app(token: str) -> Application:
     app.add_handler(MessageHandler(~filters.COMMAND, handle_other))
     app.add_handler(CallbackQueryHandler(on_queue_button, pattern=r"^qcancel:"))
     app.add_handler(CallbackQueryHandler(on_menu_button, pattern=r"^m:"))
+    app.add_handler(CallbackQueryHandler(shop.on_button, pattern=r"^sh:"))
     app.add_handler(CallbackQueryHandler(on_paid_button, pattern=r"^(paid|unpaid):\d+$"))
     app.add_handler(CallbackQueryHandler(on_rule_delete, pattern=r"^rdel:\d+$"))
     app.add_handler(CallbackQueryHandler(on_admin_button, pattern=r"^(allow|deny|remove):"))
