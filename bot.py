@@ -1274,7 +1274,14 @@ def _build_app(token: str) -> Application:
     app.add_handler(CommandHandler(["oylikolish", "ruxsatolish"], paid_cmd))
     app.add_handler(CommandHandler("qoidaochir", remove_rule_cmd))
     app.add_handler(MessageHandler(
-        filters.PHOTO | filters.Document.IMAGE | filters.Document.PDF, handle_photo))
+        # PDF/rasm "fayl" sifatida noto'g'ri turda kelishi mumkin (application/octet-stream) -
+        # kengaytma bo'yicha ham qabul qilinadi (foydalanuvchi: "PDF formatini ham o'qisin")
+        filters.PHOTO | filters.Document.IMAGE | filters.Document.PDF
+        | filters.Document.FileExtension("pdf", case_sensitive=False)
+        | filters.Document.FileExtension("jpg", case_sensitive=False)
+        | filters.Document.FileExtension("jpeg", case_sensitive=False)
+        | filters.Document.FileExtension("png", case_sensitive=False)
+        | filters.Document.FileExtension("webp", case_sensitive=False), handle_photo))
     # Qolgan hamma narsa (buyruqlardan tashqari) - jim qolmaslik uchun
     app.add_handler(MessageHandler(~filters.COMMAND, handle_other))
     app.add_handler(CallbackQueryHandler(on_queue_button, pattern=r"^qcancel:"))
