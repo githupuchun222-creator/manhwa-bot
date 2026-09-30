@@ -1,0 +1,15 @@
+python-telegram-bot==21.6
+ollama==0.6.2
+Pillow>=10.0.0
+python-dotenv>=1.0.0
+numpy>=1.26.0
+# PDF sahifalarini rasmga aylantirish (tashqi dastur talab qilmaydi)
+pypdfium2>=5.0
+# Tezkor OCR (sahifa ~1-2 sek). opencv ham shu bilan keladi - inpaint va flood fill uchun
+rapidocr>=3.9
+onnxruntime>=1.24
+wordninja>=2.0
+
+# 20 MB dan katta fayllar (bigfile.py, MTProto) - faqat TG_API_ID/TG_API_HASH bo'lsa ishlatiladi
+pyrofork>=2.3.60
+tgcrypto-pyrofork>=1.2.8

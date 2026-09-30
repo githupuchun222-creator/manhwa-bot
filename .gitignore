@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+logs/
+archive*/
+admins.json
+.venv/
+assets/fonts/digistrip*.ttf
