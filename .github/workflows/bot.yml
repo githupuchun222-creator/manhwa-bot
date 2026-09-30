@@ -1,0 +1,59 @@
+name: bot
+# @manhwatarjima_bot (4-bot, 2026-10-01) - @Manhwatarjima1_bot bilan bir xil kod va sozlamalar.
+# Darvoza: manhwa-gate-4.compass-crm.workers.dev (manhwa-gate/wrangler.4.toml)
+on:
+  workflow_dispatch:
+concurrency:
+  group: bot
+  cancel-in-progress: false
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Kutubxonalar (keshdan)
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-${{ hashFiles('requirements.txt') }}-v2
+      - name: O'rnatish
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -r requirements.txt
+          BOT_TOKEN=x OWNER_ID=1 .venv/bin/python -c "import fast_ocr; fast_ocr.warm_up()"
+      - name: Shrift (Digital Strip, Blambot - repoga qo'yilmaydi, litsenziya)
+        continue-on-error: true
+        run: |
+          curl -fsSL -o /tmp/ds.zip "https://dl.dafont.com/dl/?f=digital_strip"
+          unzip -oj /tmp/ds.zip digistrip.ttf -d assets/fonts
+      - name: Bot
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          OWNER_ID: ${{ secrets.OWNER_ID }}
+          GATE_KEY: ${{ secrets.GATE_KEY }}
+          GATE_URL: https://manhwa-gate-4.compass-crm.workers.dev
+          ADMINS_URL: https://manhwa-gate-4.compass-crm.workers.dev/admins
+          OCR_ENGINE: fast
+          # @gardenhwa_bot bilan teng: Gemini tarjima tahriri (o'z kaliti, manhwa-gate/.gemini.4.key) + tozalash v2
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          RENDER_V2: "1"
+          # Faqat shu botda: pufakcha shakliga qarab shrift (oval/to'rtburchak/tikanli/rasm ustida)
+          FONT_STYLES: "1"
+          # Ochiq bot: tarjimadan hamma foydalanadi (qoidalar/adminlar - faqat adminlarga)
+          PUBLIC_BOT: "1"
+          # Oddiy foydalanuvchiga 1 ta bepul bob, keyin egasiga murojaat (@sharofovsaid)
+          FREE_CHAPTERS: "1"
+          OWNER_USERNAME: sharofovsaid
+          # 20 MB dan katta fayllar (bigfile.py, MTProto)
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+          BOT_SLOT: "1"
+          # Uxlamaydi: faqat 5 soatlik chegarada almashadi (darvoza ALWAYS_ON)
+          IDLE_EXIT: "999999"
+        run: .venv/bin/python runner.py
