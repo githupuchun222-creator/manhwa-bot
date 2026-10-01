@@ -5,3 +5,7 @@ archive*/
 admins.json
 .venv/
 assets/fonts/digistrip*.ttf
+run-local.ps1
+hidden-launch.vbs
+setup-local.ps1
+phone/

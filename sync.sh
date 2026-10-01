@@ -7,5 +7,4 @@ for f in admins.py bigfile.py bot.py shop.py bubble_refine.py config.py fast_ocr
   cp ../manhwa-tarjima-bot/$f .
 done
 cp -r ../manhwa-tarjima-bot/assets .
-rm -f assets/fonts/digistrip*.ttf
 git add -A && git commit -qm "Bot kodini yangilash" && git push -q || echo "O'zgarish yo'q"

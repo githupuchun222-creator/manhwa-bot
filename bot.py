@@ -91,7 +91,7 @@ VLM_BUDGET_PER_PDF = int(os.getenv("VLM_BUDGET_PER_PDF", "2"))
 
 # Kiruvchi fayl va natijalar (sifatni tekshirish uchun), oxirgi 3 ta ish
 ARCHIVE_DIR = BASE_DIR / f"archive{BOT_SUFFIX}"
-ARCHIVE_KEEP = 3
+ARCHIVE_KEEP = int(os.getenv("ARCHIVE_KEEP", "3") or 3)   # noutbukda ko'proq (xatolarni asl fayldan tekshirish)
 
 # NAVBAT: barcha foydalanuvchilarning fayllari bitta navbatga tushadi va kelish
 # tartibida birma-bir bajariladi (AI mahalliy CPU'da - parallel ishlatish umumiy
@@ -1307,6 +1307,12 @@ async def _process_pdf(update: Update | None, context: ContextTypes.DEFAULT_TYPE
     if not pages:
         await status_msg.edit_text("PDF sahifalarini rasmga aylantirib bo'lmadi.")
         return
+    # Sahifa chegarasi pufakchani kesib o'tgan bo'lsa - chegara bo'sh joyga suriladi
+    try:
+        fixed = await asyncio.to_thread(pdf_utils.reslice, [p[2] for p in pages])
+        pages = [(n, t, j) for (n, t, _), j in zip(pages, fixed)]
+    except Exception:
+        logger.exception("Sahifalarni qayta kesib bo'lmadi - asl holicha")
 
     # Seriya lug'ati: ismlar shu seriyaning oldingi boblaridagidek yoziladi
     uz_translate.set_series(chat_id, src_name)

@@ -89,6 +89,84 @@ def render_pages(pdf_bytes: bytes, max_pages: int = DEFAULT_MAX_PAGES):
         doc.close()
 
 
+def _uniform_rows(gray) -> "np.ndarray":
+    """Har qator bir xil rangdami (panel oralig'i, oq fon). Chekka shovqin hisobga olinmaydi."""
+    import numpy as np
+
+    lo = np.percentile(gray, 1, axis=1)
+    hi = np.percentile(gray, 99, axis=1)
+    return (hi - lo) <= 12
+
+
+def _band(uni, start: int, stop: int, step: int, need: int) -> int | None:
+    """start dan step yo'nalishida birinchi `need` qatorli bir xil tasmaning o'rtasi."""
+    run = 0
+    for y in range(start, stop, step):
+        run = run + 1 if uni[y] else 0
+        if run >= need:
+            return y + (need // 2 if step < 0 else -(need // 2))
+    return None
+
+
+def reslice(pages: list[bytes]) -> list[bytes]:
+    """Sahifa chegarasi pufakcha/yozuvni KESIB o'tgan bo'lsa, chegarani bo'sh joyga suradi.
+
+    Uzun lentali manhwa PDF'lari ko'pincha ixtiyoriy joydan sahifalarga bo'lingan: pufakchaning
+    yarmi bir sahifada, yarmi keyingisida. Unda OCR kesilgan qatorni o'qiy olmaydi - asl yozuvning
+    yarmi o'chmay qoladi, gap ikkiga bo'linib tarjima qilinadi (foydalanuvchi namunasi,
+    2026-10-02: "QANI, QO'YINGLAR." ostida kesilgan asl qator). Chegaraning ikkala tomoni ham
+    "band" bo'lsa, eng yaqin bo'sh tasma (panel oralig'i) topilib, kesilgan qism qo'shni sahifaga
+    o'tkaziladi. Sahifalar SONI o'zgarmaydi; bo'sh tasma topilmasa sahifa o'z holicha qoladi.
+    """
+    import numpy as np
+
+    if len(pages) < 2:
+        return pages
+    try:
+        imgs = [np.asarray(Image.open(io.BytesIO(p)).convert("RGB")) for p in pages]
+    except Exception:
+        return pages
+    changed = [False] * len(imgs)
+    gray = lambda a: a.astype(np.float32) @ np.array([0.299, 0.587, 0.114], np.float32)
+    for i in range(len(imgs) - 1):
+        A, B = imgs[i], imgs[i + 1]
+        if A.shape[1] != B.shape[1] or A.shape[0] < 200 or B.shape[0] < 200:
+            continue
+        edge = 6
+        if _uniform_rows(gray(A[-edge:])).all() or _uniform_rows(gray(B[:edge])).all():
+            continue                       # chegara bo'sh joydan o'tgan - hech narsa kesilmagan
+        need = max(24, int(A.shape[1] * 0.022))
+        ha, hb = A.shape[0], B.shape[0]
+        # 1) A ning pastki qismidan bo'sh tasma: dumini B ning boshiga o'tkazamiz
+        span = min(int(ha * 0.45), 1600)
+        ua = _uniform_rows(gray(A[ha - span:]))
+        cut = _band(ua, span - 1, -1, -1, need)
+        if cut is not None and hb + (span - cut) <= RENDER_MAX_HEIGHT:
+            cut += ha - span
+            imgs[i], imgs[i + 1] = A[:cut], np.vstack([A[cut:], B])
+            changed[i] = changed[i + 1] = True
+            continue
+        # 2) B ning boshidan bo'sh tasma: boshini A ning oxiriga o'tkazamiz
+        span = min(int(hb * 0.45), 1600)
+        ub = _uniform_rows(gray(B[:span]))
+        cut = _band(ub, 0, span, 1, need)
+        if cut is not None and ha + cut <= RENDER_MAX_HEIGHT:
+            imgs[i], imgs[i + 1] = np.vstack([A, B[:cut]]), B[cut:]
+            changed[i] = changed[i + 1] = True
+    out = []
+    for p, im, ch in zip(pages, imgs, changed):
+        if not ch:
+            out.append(p)
+            continue
+        buf = io.BytesIO()
+        Image.fromarray(np.ascontiguousarray(im)).save(buf, format="JPEG", quality=95)
+        out.append(buf.getvalue())
+    moved = sum(changed)
+    if moved:
+        logger.info("Sahifa chegaralari surildi: %d ta sahifa qayta kesildi", moved)
+    return out
+
+
 # Telegram bot 50 MB dan katta fayl yubora olmaydi - zaxira bilan
 MAX_OUTPUT_BYTES = 48 * 1024 * 1024
 # PDF sahifa kengligi (punktda). Piksel = punkt qilinsa 1100x19556 sahifa ba'zi

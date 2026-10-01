@@ -711,6 +711,11 @@ def _fit_text(draw: ImageDraw.ImageDraw, text: str, box_w: int, box_h: int,
     chizilardi (sinovda: asl ~34 px matn o'rniga ~80 px chiqqan).
     """
     size = max(9, min(box_h // 2, int(box_w / 3)))
+    if FONT_STYLES:
+        # Bir qatorli past quti (tizim oynasidagi yozuv): box_h // 2 matnni asl yozuvdan ikki
+        # barobar mayda qilardi (foydalanuvchi namunasi, 2026-10-02: "TIZIMGA KIRISH
+        # FAOLLASHTIRILDI!" mayda). 0.62: quti harfdan balandroq (chet bilan) - asl yozuvdan katta chiqmasin.
+        size = max(9, min(int(box_h * 0.62), int(box_w / 3)))
     if max_size:
         size = max(9, min(size, int(max_size * _size_scale())))
     while size >= 9:
@@ -1208,6 +1213,37 @@ def _is_sfx(item: dict, page_line_h: float | None, image_h: int) -> bool:
     return lh >= max(90, image_h * 0.06) and letters <= 8
 
 
+def _same_text(a: str, b: str) -> bool:
+    """Tarjima asl yozuv bilan bir xilmi (faqat harf/raqam, katta-kichikligi hisobga olinmaydi)."""
+    norm = lambda t: "".join(c for c in (t or "").upper() if c.isalnum())
+    return bool(norm(a)) and norm(a) == norm(b)
+
+
+def _sfx_in_bubble(arr: np.ndarray, box: tuple[int, int, int, int], line_h) -> bool:
+    """Katta qisqa yozuv YOPIQ pufakcha ichidami? Unda u effekt emas, baqirib aytilgan gap.
+
+    Foydalanuvchi namunasi (2026-10-02): pufakchadagi katta "MM!" effekt deb olinib, asl yozuv
+    joyida qolgan va ostiga mayda konturli izoh yozilgan edi. Pufakcha ichidagi yozuv oddiy
+    nutq kabi o'chirilib, o'rniga tarjima yoziladi.
+    """
+    try:
+        x1, y1, x2, y2 = box
+        bg = _bg_around(arr, box, line_h) or tuple(
+            int(v) for v in np.median(arr[y1:y2, x1:x2].reshape(-1, 3), axis=0))
+        for grow in (1.0, 2.5, 4.0):      # katta pufakcha qidiruv oynasiga sig'masa - kattaroq oyna
+            f = _fill_bubble(arr.copy(), box, bg, grow=grow)
+            if f is None:
+                return False
+            if f[1] or f[2] is None:
+                continue
+            if _leaked(f[2], box) or _box_in_shape(box, f[2]) < 0.7:
+                return False
+            return float(f[2][2].sum()) >= 1.25 * (x2 - x1) * (y2 - y1)
+        return False
+    except Exception:
+        return False
+
+
 def _draw_sfx_label(draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int], text: str,
                     img_w: int, img_h: int, line_h: float) -> None:
     """Effekt ostiga (joy bo'lmasa ustiga) kichik konturli izoh."""
@@ -1395,6 +1431,7 @@ def render_translation(image_bytes: bytes, translations: list[dict], quality: in
         key=lambda it: (float(it["bbox"][1]), float(it["bbox"][0])),
     )
     jobs = []
+    tboxes = []                           # jobs bilan bir xil tartibda: asl matn qutilari
     for item in ordered:
         bbox = item.get("bbox")
         uzbek_text = (item.get("uzbek") or "").strip()
@@ -1423,8 +1460,12 @@ def render_translation(image_bytes: bytes, translations: list[dict], quality: in
             # skrinshotlari) - qisqa ingliz bo'lmagan yozuv joyida, tarjimasiz qoladi.
             continue
         if _is_sfx(item, page_line_h, H):
-            jobs.append(("sfx", box, None, uzbek_text, line_h))
-            continue
+            if FONT_STYLES and _same_text(item.get("original") or "", uzbek_text):
+                continue                  # "MM!" -> "MM!": takror izoh yozilmaydi, asl yozuv qoladi
+            if not (FONT_STYLES and _sfx_in_bubble(arr, box, line_h)):
+                jobs.append(("sfx", box, None, uzbek_text, line_h))
+                tboxes.append(box)
+                continue
 
         bg_color = _dominant_color(image.crop(box))
         ink_color = None
@@ -1437,6 +1478,7 @@ def render_translation(image_bytes: bytes, translations: list[dict], quality: in
                 # naqshli fon saqlanadi: faqat harflar o'chiriladi, o'z shriftida yoziladi
                 area = _inpaint_text(arr, box, glow=True)
                 jobs.append(("system", area, bg_color, uzbek_text, max_size, sys_ink, angle))
+                tboxes.append(box)
                 continue
         before = _ink(arr, box, bg_color)
         if FONT_STYLES and TILT_STEEP < abs(angle) <= TILT_MAX:
@@ -1497,6 +1539,7 @@ def render_translation(image_bytes: bytes, translations: list[dict], quality: in
                 _erase_ink(arr, box, bg_color)
             jobs.append(("bubble", inner, bg_color, uzbek_text, max_size, shape, box, upper,
                          ink_color, style, angle))
+            tboxes.append(box)
         else:
             flat = _flat_bg(arr, box) if FONT_STYLES else None
             area = _inpaint_text(arr, box)
@@ -1529,9 +1572,13 @@ def render_translation(image_bytes: bytes, translations: list[dict], quality: in
                             area = (int(cx - half_w), int(cy - half_h),
                                     int(cx + half_w), int(cy + half_h))
                 jobs.append(("flat", area, flat, uzbek_text, max_size, angle))
+                tboxes.append(box)
             else:
                 jobs.append(("art", area, None, uzbek_text, max_size, angle))
+                tboxes.append(box)
 
+    if FONT_STYLES:
+        jobs = _separate(jobs, tboxes)
     jobs = _merge_same_bubble(jobs)
 
     # 2-bosqich: yozish
@@ -1614,6 +1661,42 @@ def _merge_same_bubble(jobs: list) -> list:
         else:
             out.append(job)
     return out
+
+
+def _separate(jobs: list, tboxes: list) -> list:
+    """Yonma-yon bloklarning YOZISH qutilari bir-biriga kirib qolmasin.
+
+    Tekis/tizim/rasm rejimida har blokning yozish qutisi asl matn qutisidan kengaytiriladi.
+    Ikki qo'shni qator alohida blok bo'lsa, qutilari ustma-ust tushib, birining ikkinchi qatori
+    ikkinchisining ustiga yozilardi (foydalanuvchi namunasi, 2026-10-02: ko'k tizim oynasida
+    "XUDOSIMON MAVJUDOTLAR" ustiga "DUNYOLAR"). Chegara - ikki asl matn orasining o'rtasi.
+    """
+    def ok(j):
+        return j[0] in ("flat", "system", "art") or (j[0] == "bubble" and j[5] is None)
+
+    jobs = list(jobs)
+    for i in range(len(jobs)):
+        for k in range(i + 1, len(jobs)):
+            if not (ok(jobs[i]) and ok(jobs[k])):
+                continue
+            a, b = jobs[i][1], jobs[k][1]
+            if min(a[2], b[2]) <= max(a[0], b[0]) or min(a[3], b[3]) <= max(a[1], b[1]):
+                continue
+            ta, tb = tboxes[i], tboxes[k]
+            a, b = list(a), list(b)
+            if min(ta[2], tb[2]) > max(ta[0], tb[0]):          # ustma-ust (tik qo'shnilar)
+                up, lo, tu, tl = (a, b, ta, tb) if ta[1] + ta[3] <= tb[1] + tb[3] else (b, a, tb, ta)
+                cut = int((tu[3] + tl[1]) / 2)
+                up[3], lo[1] = min(up[3], cut), max(lo[1], cut)
+            else:                                              # yonma-yon
+                le, ri, t1, t2 = (a, b, ta, tb) if ta[0] + ta[2] <= tb[0] + tb[2] else (b, a, tb, ta)
+                cut = int((t1[2] + t2[0]) / 2)
+                le[2], ri[0] = min(le[2], cut), max(ri[0], cut)
+            if min(a[2] - a[0], a[3] - a[1], b[2] - b[0], b[3] - b[1]) < 12:
+                continue
+            jobs[i] = (jobs[i][0], tuple(a)) + tuple(jobs[i][2:])
+            jobs[k] = (jobs[k][0], tuple(b)) + tuple(jobs[k][2:])
+    return jobs
 
 
 def _open_bubble_box(inner, box, W: int, H: int):

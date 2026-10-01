@@ -62,6 +62,8 @@ SRC_LANGS = [("en", "🇬🇧 Inglizcha"), ("ko", "🇰🇷 Koreyscha"), ("ja", 
 TGT_LANGS = [("uz", "🇺🇿 O‘zbekcha")]          # admin yoqqan tillar (hozircha bittasi)
 LANG_NAME = dict(SRC_LANGS + TGT_LANGS)
 MAX_FILES = int(os.getenv("MAX_ORDER_FILES", "80"))
+# Bitta buyurtmada eng ko'pi shuncha BOB (har PDF/ZIP - alohida bob). 2026-10-02: 10 ta.
+MAX_CHAPTERS = int(os.getenv("MAX_ORDER_CHAPTERS", "10"))
 
 ST_QUEUED, ST_WORK, ST_DONE, ST_CANCEL, ST_FAIL = (
     "Qabul qilindi", "Tarjima qilinmoqda", "Yetkazildi", "Bekor qilindi", "Xatolik")
@@ -224,8 +226,8 @@ async def show_pay(update: Update, context, edit=False) -> None:
     head = (f"💰 <b>Paket va balans</b>\n\n"
             f"Hisob birligi: <b>1 bob</b> = bitta yuborilgan bob (eng ko‘pi {pages} sahifa). "
             "Sahifa yoki rasm soni alohida sanalmaydi.\n\n")
-    free = (f"🎁 Bepul: <b>{admins.FREE_CHAPTERS} ta bob</b> (bir martalik) - "
-            + {"mavjud": "hali ishlatilmagan ✅", "band": "hozirgi bobda ishlatilmoqda ⏳"}.get(
+    free = (f"🎁 Bepul: <b>{max(admins.FREE_CHAPTERS, admins.free_left(uid))} ta bob</b> - "
+            + {"mavjud": f"{admins.free_left(uid)} tasi hali ishlatilmagan ✅", "band": "hozirgi bobda ishlatilmoqda ⏳"}.get(
                 trial_state(uid), "ishlatilgan") + "\n") if admins.FREE_CHAPTERS else ""
     if admins.PACKS_ON:
         body = (free + f"💰 Balansingiz: <b>{admins.balance(uid)} ta bob</b>\n\n"
@@ -841,6 +843,8 @@ async def _start_job(update: Update, context, draft: dict, nonce: str) -> None:
         allow = max(1, admins.balance(uid))
     if admins.DAILY_LIMIT and not admins.is_admin(uid):
         allow = min(allow, max(1, admins.DAILY_LIMIT - admins.daily_used(uid)))
+    over = max(0, n - MAX_CHAPTERS)       # bitta buyurtmada MAX_CHAPTERS tadan ortiq bob olinmaydi
+    allow = min(allow, MAX_CHAPTERS)
     skipped = max(0, n - allow)
     if skipped:                           # hisob yetadigan boblargina tarjima qilinadi
         n = allow
@@ -869,8 +873,12 @@ async def _start_job(update: Update, context, draft: dict, nonce: str) -> None:
         admins.add_daily(uid, n)
     note = (f"\n\U0001f4da <b>{n} ta bob</b> - har biri alohida fayl bo\u2018lib qaytadi." if n > 1 else "")
     if skipped:
-        note += (f"\n\u26a0\ufe0f Yana {skipped} ta bob hisobingizga sig\u2018madi - ular tarjima "
-                 "qilinmaydi (obuna yoki ertangi kunlik chegara bilan qayta yuboring).")
+        if over >= skipped:
+            note += (f"\n\u26a0\ufe0f Bitta buyurtmada eng ko\u2018pi {MAX_CHAPTERS} ta bob - qolgan "
+                     f"{skipped} tasini keyingi buyurtmada yuboring.")
+        else:
+            note += (f"\n\u26a0\ufe0f Yana {skipped} ta bob hisobingizga sig\u2018madi - ular tarjima "
+                     "qilinmaydi (obuna yoki ertangi kunlik chegara bilan qayta yuboring).")
     await _reply(update, f"\u2705 <b>{ref}</b> qabul qilindi: {len(order['files'])} ta fayl "
                  f"({_files_summary(order['files'])}).{note}\n\nHolatni shu yerda ko\u2018rsatib turaman.",
                  None, edit=True)

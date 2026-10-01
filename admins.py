@@ -141,12 +141,55 @@ def used_chapters(user_id: int) -> int:
 def add_used(user_id: int, delta: int = 1) -> None:
     data = _load()
     used = data.setdefault("used", {})
-    n = max(0, int(used.get(str(user_id), 0)) + delta)
+    # "bonus": sovg'a qilingan bepul boblar - hisob shuncha MANFIYGA tushishi mumkin
+    floor = -int(data.get("bonus", {}).get(str(user_id), 0))
+    n = max(floor, int(used.get(str(user_id), 0)) + delta)
     if n:
         used[str(user_id)] = n
     else:
         used.pop(str(user_id), None)
     _save(data)
+
+
+def known_users(data: dict | None = None) -> list[int]:
+    """Botga yozgan hamma foydalanuvchilar (hisob, obuna, buyurtma, kunlik sanoqdan)."""
+    data = data or _load()
+    ids: set[int] = set()
+    for key in ("used", "subs", "bonus"):
+        ids.update(int(k) for k in data.get(key, {}))
+    ids.update(int(v) for v in data.get("users", {}).values())
+    ids.update(int(o["uid"]) for o in data.get("orders", {}).values() if o.get("uid"))
+    ids.update(int(k) for k in data.get("daily", {}).get("n", {}))
+    return sorted(ids)
+
+
+# BIR MARTALIK SOVG'A (2026-10-02, foydalanuvchi: "bot yaxshilandi, sizda yangi 2 ta imkoniyat bor
+# degin"): shu kungacha botga yozgan har bir odamda 2 ta bepul bob bo'ladi (ishlatganlarda ham).
+# Belgi adminlar faylida saqlanadi - runner qayta ishga tushsa takrorlanmaydi.
+GIFTS = {"2026-10-02": 2}
+
+
+def apply_gifts() -> None:
+    if not FREE_CHAPTERS:
+        return
+    data = _load()
+    done = data.setdefault("gifts", [])
+    changed = False
+    for tag, n in GIFTS.items():
+        if tag in done:
+            continue
+        used, bonus = data.setdefault("used", {}), data.setdefault("bonus", {})
+        for uid in known_users(data):
+            if uid in data.get("admins", []):
+                continue
+            k = str(uid)
+            if FREE_CHAPTERS - int(used.get(k, 0)) < n:      # kamida n ta bepul bob qolsin
+                used[k] = FREE_CHAPTERS - n
+                bonus[k] = max(int(bonus.get(k, 0)), n - FREE_CHAPTERS)
+        done.append(tag)
+        changed = True
+    if changed:
+        _save(data)
 
 
 # OYLIK OBUNA (2026-10-01, @Manhwatarjima1_bot - foydalanuvchi: "oylik to'lov, panelda chegirmada
