@@ -160,11 +160,17 @@ async def _reply(update: Update, text: str, markup=None, edit: bool = False) -> 
                                               disable_web_page_preview=True)
 
 
-def _limits_text() -> str:
+def _limits_text(uid: int | None = None) -> str:
     big = B.bigfile.MAX_BIG_BYTES // 2**20 if B.bigfile.enabled() else 20
+    trial = B.TRIAL_MAX_BYTES // 2**20
+    if uid is not None and trial < big and trial_state(uid) != "cheksiz":
+        size_line = f"• Bitta fayl <b>{trial} MB</b> gacha (bepul sinov; obunachilarga {big} MB)\n"
+    else:
+        size_line = f"• Bitta fayl <b>{big} MB</b> gacha" + (f" (bepul sinovda {trial} MB)" if trial < big and uid is None else "") + "\n"
     return (f"• Bir buyurtmada eng ko‘pi <b>{B.MAX_PDF_PAGES}</b> sahifa\n"
-            f"• Bitta fayl <b>{big} MB</b> gacha (PDF, ZIP/CBZ, JPG, PNG, WEBP)\n"
-            f"• Sifat yo‘qolmasligi uchun rasmlarni <b>fayl</b> sifatida yuborgan yaxshi")
+            + size_line +
+            "• Formatlar: PDF, ZIP/CBZ, JPG, PNG, WEBP\n"
+            "• Sifat yo‘qolmasligi uchun rasmlarni <b>fayl</b> sifatida yuborgan yaxshi")
 
 
 async def show_free(update: Update, context, edit=False) -> None:
@@ -173,7 +179,7 @@ async def show_free(update: Update, context, edit=False) -> None:
     text = ("🎁 <b>Bepul bob</b>\n\n"
             f"Har bir foydalanuvchiga bir martalik <b>{admins.FREE_CHAPTERS} ta bepul bob</b> beriladi "
             "(boshqa manhwa yuborish uni yangilamaydi).\n\n" + _trial_line(uid) + "\n\n"
-            "<b>Cheklovlar:</b>\n" + _limits_text())
+            "<b>Cheklovlar:</b>\n" + _limits_text(uid))
     rows = []
     if st in ("mavjud", "cheksiz"):
         rows.append([_ib(BTN_ORDER, "sh:order")])
@@ -194,7 +200,7 @@ async def show_price(update: Update, context, edit=False) -> None:
             "📚 <b>Alohida boblar / katta hajm:</b> narx bob uzunligi va ishga qarab - admin bilan kelishiladi\n\n"
             "<b>To‘lov:</b> admin bilan yozishmada kelishiladi. To‘lovdan keyin admin obunangizni "
             "qo‘lda yoqadi (avtomatik to‘lov yo‘q).\n\n"
-            "<b>Cheklovlar:</b>\n" + _limits_text() + "\n\n" + _trial_line(uid) +
+            "<b>Cheklovlar:</b>\n" + _limits_text(uid) + "\n\n" + _trial_line(uid) +
             f"\n\nSizning ID: <code>{uid}</code> (admin bilan yozishganda yuboring)")
     rows = [_contact_button()] if _owner() else []
     rows.append([_ib("📝 Buyurtma tafsilotlarini yuborish", "sh:inq")])
@@ -322,7 +328,7 @@ async def _ask_step(update: Update, draft: dict, edit: bool = False) -> None:
             rows + [[_ib("⬅️ Orqaga", "sh:back")], CANCEL_ROW]), edit)
     elif step == "upload":
         await _reply(update, "5/6 · <b>Bob sahifalarini yuboring</b> - PDF, ZIP yoki rasmlar (albom ham bo‘ladi).\n\n"
-                     + _limits_text() + "\n\nHammasini yuborib bo‘lgach <b>✅ Yuklash tugadi</b> ni bosing.",
+                     + _limits_text(update.effective_user.id) + "\n\nHammasini yuborib bo‘lgach <b>✅ Yuklash tugadi</b> ni bosing.",
                      _upload_markup(draft), edit)
     elif step == "note":
         await _reply(update, "6/6 · Qo‘shimcha ko‘rsatma bormi? (masalan: <i>ismlarni o‘zgartirmang</i>)\n"
@@ -426,10 +432,8 @@ async def on_file(update: Update, context) -> bool:
     msg = update.effective_message
     item = msg.photo[-1] if msg.photo else msg.document
     size = getattr(item, "file_size", 0) or 0
-    big_ok = B.bigfile.enabled() and size <= B.bigfile.MAX_BIG_BYTES
-    if size > B.MAX_DOWNLOAD_BYTES and not big_ok:
-        await msg.reply_text(f"⚠️ Bu fayl juda katta ({size / 2**20:.0f} MB) - qabul qilinmadi. "
-                             "Oldin yuborilganlari saqlandi.")
+    if size > B.max_upload_bytes(uid):
+        await msg.reply_text(B.too_big_text(uid, size) + "\nOldin yuborilganlari saqlandi.")
         return True
     if len(draft["files"]) >= MAX_FILES:
         await msg.reply_text(f"⚠️ Bir buyurtmada eng ko‘pi {MAX_FILES} ta fayl.")

@@ -53,6 +53,27 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 # Telegram Bot API oddiy tokenlar uchun 20 MB dan katta faylni getFile bilan
 # yuklab bo'lmaydi — foydalanuvchiga tushunarli xabar berish uchun oldindan tekshiramiz.
 MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024
+# Bepul sinovchi (obunasiz, admin emas) uchun yuklash chegarasi (2026-10-01, foydalanuvchi:
+# "birinchi sinab ko'rmoqchi bo'lgan odamga 20 MB dan oshmasin"). Obunachi/admin - bigfile chegarasi.
+TRIAL_MAX_BYTES = int(os.getenv("TRIAL_MAX_MB", "20")) * 1024 * 1024
+
+
+def max_upload_bytes(uid: int) -> int:
+    big = bigfile.MAX_BIG_BYTES if bigfile.enabled() else MAX_DOWNLOAD_BYTES
+    if admins.FREE_CHAPTERS and not admins.is_admin(uid) and not admins.is_paid(uid):
+        return min(big, TRIAL_MAX_BYTES)
+    return big
+
+
+def too_big_text(uid: int, size: int) -> str:
+    limit = max_upload_bytes(uid)
+    text = f"⚠️ Bu fayl juda katta ({size / 2**20:.0f} MB, sizga chegara {limit // 2**20} MB)."
+    if limit < (bigfile.MAX_BIG_BYTES if bigfile.enabled() else MAX_DOWNLOAD_BYTES):
+        text += (f"\nBepul sinov uchun fayl {limit // 2**20} MB gacha bo'lishi kerak - bobni bo'lib yoki "
+                 "siqib yuboring. Obunachilar katta fayllarni ham yubora oladi (💰 Narxlar va shartlar).")
+    else:
+        text += "\nIltimos, bobni bo'lib (yoki siqib) qayta yuboring."
+    return text
 
 # Telegram sendPhoto cheklovi: (kenglik+balandlik) <= 10000 va fayl <= 10 MB,
 # aks holda sendDocument (asl sifatda) ishlatiladi.
@@ -623,12 +644,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # Fayl sifatida katta bo'lsa - navbatga qo'ymasdan darhol aytamiz
     photo = msg.photo[-1] if msg.photo else msg.document
     size = getattr(photo, "file_size", None) or 0
-    if size > MAX_DOWNLOAD_BYTES and not (bigfile.enabled() and size <= bigfile.MAX_BIG_BYTES):
-        limit = bigfile.MAX_BIG_BYTES // 2**20 if bigfile.enabled() else 20
-        await msg.reply_text(
-            f"Bu fayl juda katta ({size / 2**20:.0f} MB, chegara {limit} MB). "
-            "Iltimos, bobni bo'lib (yoki siqib) qayta yuboring."
-        )
+    if size > max_upload_bytes(user_id):
+        await msg.reply_text(too_big_text(user_id, size))
         return
 
     # Bepul cheklov: oddiy foydalanuvchiga FREE_CHAPTERS ta bob. Bitta bob = bitta PDF
