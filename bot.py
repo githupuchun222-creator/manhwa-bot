@@ -1363,7 +1363,7 @@ async def _process_pdf(update: Update | None, context: ContextTypes.DEFAULT_TYPE
     if failed:
         caption += f"\nTarjima qilinmagan sahifalar (aslicha qoldi): {', '.join(map(str, failed))}"
     # Ochiq hisobot: nimaga ishonish mumkin, nimani ko'rib chiqish kerak
-    st = uz_translate.STATS
+    st = uz_translate.stats()
     if st["google"] and (st["ai"] + st["google"]):
         share = 100 * st["google"] // (st["ai"] + st["google"])
         if share >= 10:

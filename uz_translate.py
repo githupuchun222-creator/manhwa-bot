@@ -20,6 +20,7 @@ TEZLIK: sahifadagi barcha pufakchalar BITTA so'rovda tarjima qilinadi
 Avval har bir pufakcha uchun 2 tadan so'rov ketardi (6 pufakcha = 12 so'rov,
 ~5 sekund); endi sahifaga 2 ta so'rov (~1 sekund).
 """
+import contextvars
 import html
 import json
 import logging
@@ -517,17 +518,36 @@ Return ONLY a JSON object: {"lines": [exactly one Uzbek string per input line, s
 character/place/guild name in these lines; {} if none)."""
 
 
-_ctx: list[str] = []          # oldingi sahifa(lar)ning oxirgi gaplari - Gemini uchun kontekst
+# HOLAT HAR BOB UCHUN ALOHIDA (2026-10-02). Avval kontekst, ismlar va hisob modul darajasida
+# (global) edi. Bot 4 ta bobni PARALLEL tarjima qila boshlagach, ular aralashib ketdi: bir
+# foydalanuvchining oldingi gaplari boshqasining bobiga "kontekst" bo'lib berilar, bir bob
+# boshlanishi boshqasining ismlar lug'atini tozalab yuborardi (foydalanuvchi: "4 ta yuborilsa
+# qo'shib yubormoqda"). Endi holat contextvar'da: har ish o'z holatini oladi, uning ichidagi
+# oqimlar (asyncio.to_thread) esa aynan shu holatni ko'radi.
+class _State:
+    def __init__(self) -> None:
+        self.ctx: list[str] = []          # oldingi sahifa(lar)ning oxirgi gaplari - kontekst
+        self.names: dict[str, str] = {}   # "JIMIN" -> "Jimin"
+        self.series = ""                  # seriya lug'ati kaliti
+        self.stats = {"ai": 0, "google": 0}
+        self.last = 0.0
+
+
+_state_var: contextvars.ContextVar = contextvars.ContextVar("tarjima_holati", default=None)
+_shared_state = _State()                  # set_series chaqirilmagan (yakka rasm) holat uchun
+
+
+def _S() -> _State:
+    return _state_var.get() or _shared_state
+
+
 # ISMLAR (2026-10-01, foydalanuvchi: "ism doim bir xil bo'lsin", "ismlarda xato"): bob davomida
 # har ismning birinchi yozilishi eslab qolinadi va keyingi sahifalarga "aynan shunday yoz" deb beriladi.
-_names: dict[str, str] = {}   # "JIMIN" -> "Jimin"
-_last_call = {"t": 0.0}
 NEW_CHAPTER_GAP = 600         # shuncha soniya tarjima bo'lmasa - yangi bob (kontekst tozalanadi)
 
 
 # Seriya lug'ati (2026-10-01): ismlar faqat bir bob ichida emas, SERIYA bo'yicha eslab qolinadi
 # (admins.json "glossary"), shuning uchun 35-bobdagi "Lim Duvon" 36-bobda ham o'sha bo'ladi.
-_series = {"key": ""}
 GLOSSARY_MAX = 300
 
 
@@ -543,39 +563,37 @@ def _slug(text: str) -> str:
 def set_series(user_id: int | str, title: str) -> None:
     """Bob boshlanishida chaqiriladi: shu seriyaning saqlangan ismlar lug'atini yuklaydi."""
     key = f"{user_id}:{_slug(title)}"
-    _ctx.clear()
-    if key == _series["key"]:
-        return                                   # o'sha seriya - lug'at joyida qoladi
-    _series["key"] = key
-    _names.clear()
+    st = _State()                                # shu bob uchun toza, ALOHIDA holat
+    st.series = key
     try:
         import admins
-        _names.update(admins.get_glossary(key))
+        st.names.update(admins.get_glossary(key))
     except Exception:
         logger.info("Seriya lug'ati yuklanmadi")
+    _state_var.set(st)
 
 
 def save_series() -> None:
     """Bob tugagach: shu bobda aniqlangan ismlarni seriya lug'atiga qo'shadi."""
-    if not _series["key"] or not _names:
+    if not _S().series or not _S().names:
         return
     try:
         import admins
-        admins.put_glossary(_series["key"], dict(list(_names.items())[-GLOSSARY_MAX:]))
+        admins.put_glossary(_S().series, dict(list(_S().names.items())[-GLOSSARY_MAX:]))
     except Exception:
         logger.info("Seriya lug'ati saqlanmadi")
 
 
 def new_chapter() -> None:
-    _ctx.clear()
-    if not _series["key"]:                       # seriya noma'lum - eski tartib
-        _names.clear()
+    _S().ctx.clear()
+    if not _S().series:                       # seriya noma'lum - eski tartib
+        _S().names.clear()
 
 
 def _parse_list(text: str) -> list | None:
     """Gemini javobidan JSON massivni ajratadi (```json ... ``` o'rami, oxiridagi izoh bo'lsa ham).
 
-    {"lines": [...], "names": {...}} ko'rinishida kelsa - ismlar _names ga yig'iladi."""
+    {"lines": [...], "names": {...}} ko'rinishida kelsa - ismlar _S().names ga yig'iladi."""
     text = text.strip()
     j, k = text.find("{"), text.find("[")
     if j >= 0 and (k < 0 or j < k):
@@ -586,7 +604,7 @@ def _parse_list(text: str) -> list | None:
                 if isinstance(names, dict):
                     for src, uz in names.items():
                         if isinstance(src, str) and isinstance(uz, str) and src.strip() and uz.strip():
-                            _names.setdefault(src.strip().upper(), uz.strip())
+                            _S().names.setdefault(src.strip().upper(), uz.strip())
                 return obj["lines"]
         except ValueError:
             pass
@@ -639,25 +657,25 @@ def apply_rules(text: str) -> str:
 
 def _same_names(line: str) -> str:
     """Model ismni inglizcha qoldirgan joyda ham ("LIM DUWON") - bobdagi yozilishi ("Lim Duvon")."""
-    for src, uz in _names.items():
+    for src, uz in _S().names.items():
         if src != uz.upper() and len(src) >= 3:
             line = re.sub(r"(?<!\w)" + re.escape(src) + r"(?!\w)", uz, line, flags=re.IGNORECASE)
     return line
 
 
 def _gemini(english: list[str], drafts: list[str]) -> list[str] | None:
-    if time.time() - _last_call["t"] > NEW_CHAPTER_GAP:
+    if time.time() - _S().last > NEW_CHAPTER_GAP:
         new_chapter()
-    _last_call["t"] = time.time()
+    _S().last = time.time()
     user = ("Each item is [English source, rough machine translation]. The machine translation is "
             "usually accurate but stiff and literal. Write the final natural Uzbek line:\n"
             + json.dumps([[e, d] for e, d in zip(english, drafts)], ensure_ascii=False))
-    if _ctx:
+    if _S().ctx:
         user = ("Previous bubbles of this chapter (context only, do NOT translate them):\n"
-                + json.dumps(_ctx[-8:], ensure_ascii=False) + "\n\n" + user)
-    if _names:
+                + json.dumps(_S().ctx[-8:], ensure_ascii=False) + "\n\n" + user)
+    if _S().names:
         user = ("Names already used in this chapter - write them EXACTLY like this:\n"
-                + json.dumps(dict(list(_names.items())[-40:]), ensure_ascii=False) + "\n\n" + user)
+                + json.dumps(dict(list(_S().names.items())[-40:]), ensure_ascii=False) + "\n\n" + user)
     # Haqiqiy sinovda 3.5-flash-lite bir marta buzuq JSON, 3.1-flash-lite 503 berdi va
     # butun sahifa Google'ning quruq tarjimasida qoldi. Endi har model 2 marta, oraliqda kutib.
     if not _gemini_ready():
@@ -693,9 +711,9 @@ def _gemini(english: list[str], drafts: list[str]) -> list[str] | None:
                                if not p.get("thought"))
                 out = _parse_list(text)
                 if isinstance(out, list) and len(out) == len(english):
-                    _last_call["t"] = time.time()
-                    _ctx.extend(english)
-                    del _ctx[:-8]
+                    _S().last = time.time()
+                    _S().ctx.extend(english)
+                    del _S().ctx[:-8]
                     return [_same_names(" ".join(str(s or "").split())) for s in out]
                 logger.info("Gemini %s: javob mos emas (%s)", model, text[:80])
             except urllib.error.HTTPError as exc:
@@ -759,11 +777,13 @@ def _gemini_ready() -> bool:
                for spec in GEMINI_MODELS for k in range(len(GEMINI_KEYS)))
 
 
-STATS = {"ai": 0, "google": 0}      # oxirgi bobdagi qatorlar (hisobot uchun)
+def stats() -> dict:
+    """Shu bobdagi qatorlar: nechta AI, nechta Google tarjimasida qoldi (hisobot uchun)."""
+    return _S().stats
 
 
 def reset_stats() -> None:
-    STATS["ai"] = STATS["google"] = 0
+    _S().stats = {"ai": 0, "google": 0}
 
 
 def _polish_part(english: list[str], drafts: list[str]) -> list[str]:
@@ -772,9 +792,9 @@ def _polish_part(english: list[str], drafts: list[str]) -> list[str]:
         half = len(english) // 2
         return _polish_part(english[:half], drafts[:half]) + _polish_part(english[half:], drafts[half:])
     if part is None:
-        STATS["google"] += len(drafts)                  # shu bo'lak Google'da qoladi
+        _S().stats["google"] += len(drafts)                  # shu bo'lak Google'da qoladi
         return drafts
-    STATS["ai"] += len(part)
+    _S().stats["ai"] += len(part)
     return part
 
 

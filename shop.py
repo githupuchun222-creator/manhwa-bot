@@ -472,6 +472,28 @@ def _put_draft(uid: int, draft: dict | None) -> None:
 CANCEL_ROW = [_ib(TXT_CANCEL, "sh:cancel")]
 
 
+def _chapters(files: list) -> list[list[dict]]:
+    """Fayllarni BOBLARGA ajratadi: har PDF/ZIP - alohida bob, ketma-ket rasmlar - bitta bob.
+
+    Avval buyurtmadagi hamma fayl bitta PDF qilib qo'shib yuborilardi: 4 ta bob (4 ta PDF)
+    yuborgan odam bitta aralash fayl olardi (foydalanuvchi, 2026-10-02: "4 ta yuborilsa
+    qo'shib yubormoqda"). Endi har bob o'z nomi bilan alohida fayl bo'lib qaytadi.
+    """
+    groups: list[list[dict]] = []
+    imgs: list[dict] = []
+    for f in files:
+        if f.get("kind") in ("pdf", "zip"):
+            if imgs:
+                groups.append(imgs)
+                imgs = []
+            groups.append([f])
+        else:
+            imgs.append(f)
+    if imgs:
+        groups.append(imgs)
+    return groups
+
+
 def _files_summary(files: list) -> str:
     pdfs = sum(1 for f in files if f["kind"] == "pdf")
     zips = sum(1 for f in files if f["kind"] == "zip")
@@ -810,13 +832,26 @@ async def _start_job(update: Update, context, draft: dict, nonce: str) -> None:
         await _reply(update, need, InlineKeyboardMarkup(rows), edit=True)
         await B._ask_owner_to_pay(context, update.effective_user)
         return
+    groups = _chapters(cur["files"])
+    n = len(groups)
+    allow = n
+    if kind == "bepul":
+        allow = max(1, admins.free_left(uid))
+    elif kind == "paket":
+        allow = max(1, admins.balance(uid))
+    if admins.DAILY_LIMIT and not admins.is_admin(uid):
+        allow = min(allow, max(1, admins.DAILY_LIMIT - admins.daily_used(uid)))
+    skipped = max(0, n - allow)
+    if skipped:                           # hisob yetadigan boblargina tarjima qilinadi
+        n = allow
+        cur["files"] = [f for g in groups[:n] for f in g]
     data["drafts"].pop(str(uid), None)
     data["seq"] = int(data.get("seq", 0)) + 1
     ref = f"M-{data['seq']:04d}"
     order = {"ref": ref, "uid": uid, "who": update.effective_user.full_name or str(uid),
              "username": update.effective_user.username or "", "title": cur.get("title", ""),
              "chapter": "", "src": "", "tgt": "uz", "files": cur["files"], "note": "",
-             "kind": kind, "created": int(time.time()), "status": ST_QUEUED}
+             "kind": kind, "created": int(time.time()), "status": ST_QUEUED, "chapters": n}
     orders = data.setdefault("orders", {})
     orders[ref] = order
     if len(orders) > 1000:                                 # eng eskilarini tozalash
@@ -826,14 +861,18 @@ async def _start_job(update: Update, context, draft: dict, nonce: str) -> None:
     charged = kind == "bepul"
     bal = kind == "paket"
     if charged:
-        admins.add_used(uid)             # yetib bormasa qaytariladi (bot._refund)
+        admins.add_used(uid, n)          # yetib bormasa qaytariladi (bot._refund)
     elif bal:
-        admins.add_balance(uid, -1)
+        admins.add_balance(uid, -n)
     daily = bool(admins.DAILY_LIMIT) and not admins.is_admin(uid)
     if daily:
-        admins.add_daily(uid)
+        admins.add_daily(uid, n)
+    note = (f"\n\U0001f4da <b>{n} ta bob</b> - har biri alohida fayl bo\u2018lib qaytadi." if n > 1 else "")
+    if skipped:
+        note += (f"\n\u26a0\ufe0f Yana {skipped} ta bob hisobingizga sig\u2018madi - ular tarjima "
+                 "qilinmaydi (obuna yoki ertangi kunlik chegara bilan qayta yuboring).")
     await _reply(update, f"\u2705 <b>{ref}</b> qabul qilindi: {len(order['files'])} ta fayl "
-                 f"({_files_summary(order['files'])}).\n\nHolatni shu yerda ko\u2018rsatib turaman.",
+                 f"({_files_summary(order['files'])}).{note}\n\nHolatni shu yerda ko\u2018rsatib turaman.",
                  None, edit=True)
     await enqueue_order(context, order, charged, daily, bal)
 
@@ -892,18 +931,11 @@ async def _inquiry(update: Update, context, text: str) -> None:
 
 
 # ------------------------------------------------------------------ bajarish (bot navbati)
-async def process_order(job: dict) -> None:
-    """Navbatdagi buyurtma: fayllarni yuklab, bitta PDF bob qilib, konveyerdan o'tkazadi."""
-    ref = job["order"]
-    o = get_order(ref)
-    context, status = job["context"], job["status"]
-    if not o:
-        return
-    _set_order(ref, status=ST_WORK, started=int(time.time()))
-    await B._edit_status(status, f"🧾 {ref}: fayllar yuklab olinmoqda...")
-    pages: list[bytes] = []
+async def _load_pages(context, files: list[dict]) -> list[bytes]:
+    """Bitta bobning fayllarini yuklab, sahifalarga (JPEG) aylantiradi."""
     from PIL import Image
-    for f in o["files"]:
+    pages: list[bytes] = []
+    for f in files:
         if f["size"] > B.MAX_DOWNLOAD_BYTES:
             data = await B.bigfile.download(f["id"], B.BOT_TOKEN)
         else:
@@ -921,11 +953,61 @@ async def process_order(job: dict) -> None:
             out = io.BytesIO()
             im.save(out, "JPEG", quality=95)
             pages.append(out.getvalue())
-    if not pages:
-        raise RuntimeError("sahifa topilmadi")
-    pdf = B.pdf_utils.build_pdf(pages[:B.MAX_PDF_PAGES])
-    name = _label(o)
-    await B._process_pdf(None, context, pdf, status, chat_id=o["uid"], src_name=name, ref=ref)
+    return pages
+
+
+async def process_order(job: dict) -> None:
+    """Buyurtmani bajaradi. Har PDF/ZIP - ALOHIDA bob va alohida natija fayli; rasmlar - bitta bob."""
+    ref = job["order"]
+    o = get_order(ref)
+    context, status = job["context"], job["status"]
+    if not o:
+        return
+    _set_order(ref, status=ST_WORK, started=int(time.time()))
+    groups = _chapters(o["files"])
+    n = len(groups)
+    done, failed = 0, []
+    for i, group in enumerate(groups, 1):
+        first = group[0]
+        if first.get("kind") in ("pdf", "zip") and first.get("name"):
+            name = first["name"].rsplit(".", 1)[0]          # asl fayl nomi - natijada ham shu
+        else:
+            name = _label(o) + (f" ({i})" if n > 1 else "")
+        await B._edit_status(status, f"\U0001f9fe {ref}" + (f" \u00b7 {i}/{n}-bob" if n > 1 else "")
+                             + ": fayllar yuklab olinmoqda...")
+        job["delivered"] = False
+        try:
+            pages = await _load_pages(context, group)
+            if not pages:
+                raise RuntimeError("sahifa topilmadi")
+            pdf = B.pdf_utils.build_pdf(pages[:B.MAX_PDF_PAGES])
+            await B._process_pdf(None, context, pdf, status, chat_id=o["uid"], src_name=name, ref=ref)
+        except Exception:
+            if n == 1:
+                raise
+            logger.exception("%s: %d/%d-bob bajarilmadi", ref, i, n)
+        if job.get("delivered"):
+            done += 1
+        else:
+            failed.append(name)
+    job["delivered"] = done > 0
+    if n > 1 and failed:
+        # Yetib bormagan boblar hisobdan qaytariladi. Hech biri yetmagan bo'lsa bittasini
+        # bot._refund o'zi qaytaradi - qolganini shu yerda.
+        back = len(failed) - (0 if done else 1)
+        if back > 0:
+            if job.get("daily"):
+                admins.add_daily(o["uid"], -back)
+            if job.get("free"):
+                admins.add_used(o["uid"], -back)
+            if job.get("bal"):
+                admins.add_balance(o["uid"], back)
+        try:
+            await context.bot.send_message(
+                o["uid"], f"\u26a0\ufe0f {ref}: {n} ta bobdan {len(failed)} tasi tarjima bo\u2018lmadi "
+                          f"(hisobdan qaytarildi):\n" + "\n".join("\u2022 " + x for x in failed[:10]))
+        except TelegramError:
+            pass
 
 
 def finish_order(job: dict) -> None:
