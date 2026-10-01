@@ -34,6 +34,9 @@ POLL_EVERY = 1.5
 # Ikkitasi bir vaqtda xabar olmaydi: pastdagi tugatguncha yuqoridagi kutadi (x-wait).
 ROLE = os.getenv("RUNNER_ROLE", "backup")
 STANDBY_EVERY = 5
+# Ish boshqa qurilmaga o'tganda FAQAT egasiga xabar (foydalanuvchilar hech narsa ko'rmaydi)
+PLACE = {"primary": "💻 noutbuk", "phone": "📱 telefon", "backup": "☁️ GitHub",
+         "none": "-"}
 
 
 async def _gate_ready() -> None:
@@ -94,6 +97,14 @@ async def main() -> None:
                     if above and not want_standby:
                         log.info("Yuqori darajadagi runner ishlayapti - ish tugagach kutishga o'tiladi")
                     want_standby = above
+                prev = r.headers.get("x-prev-role")
+                if prev and prev != ROLE:
+                    try:
+                        await app.bot.send_message(
+                            bot.OWNER_ID, f"🔁 Bot serveri almashdi: {PLACE.get(prev, prev)} → "
+                                          f"{PLACE.get(ROLE, ROLE)}.\n(Bu xabar faqat sizga ko‘rinadi.)")
+                    except Exception as exc:
+                        log.warning("Egasiga xabar yuborilmadi: %s", exc)
                 now_wait = r.headers.get("x-wait") == "1"
                 # Boshqa runner ishlagan (yoki bu qurilma uxlab turgan) bo'lsa holat o'zgargan - qayta o'qiymiz
                 resumed = standby and not above

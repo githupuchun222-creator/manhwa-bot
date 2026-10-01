@@ -634,10 +634,108 @@ def _user_rules() -> list[str]:
 def _system_prompt() -> str:
     rules = _user_rules()
     if not rules:
-        return _GEMINI_SYSTEM
-    return (_GEMINI_SYSTEM + "\n\nEDITOR'S RULES (set by the human editor - they OVERRIDE everything "
+        return _GEMINI_SYSTEM + _style_block()
+    return (_GEMINI_SYSTEM + _style_block()
+            + "\n\nEDITOR'S RULES (set by the human editor - they OVERRIDE everything "
             "above, always follow them; \"A = B\" means: never write A, write B instead):\n"
             + "\n".join(f"- {r}" for r in rules))
+
+
+def _style_block() -> str:
+    """O'rganilgan yozish uslubi (/organish) - tizim ko'rsatmasiga qo'shiladi."""
+    try:
+        import admins
+        st = admins.get_style()
+    except Exception:
+        return ""
+    guide = [str(g)[:220] for g in (st.get("guide") or [])[:14] if str(g).strip()]
+    samples = [str(x)[:140] for x in (st.get("samples") or [])[:20] if str(x).strip()]
+    if not guide and not samples:
+        return ""
+    out = ("\n\nHOUSE STYLE (learned from a reference Uzbek translation the editor approved - write in "
+           "this style; the source meaning and the EDITOR'S RULES still come first):\n"
+           + "\n".join(f"- {g}" for g in guide))
+    if samples:
+        out += ("\nExample lines in that style (imitate the wording and tone, never copy them into "
+                "the output):\n" + "\n".join(f"- {x}" for x in samples))
+    return out
+
+
+def _gemini_text(system: str, user: str) -> str | None:
+    """Erkin (tarjima bo'lmagan) so'rov: kalit va modellar bo'yicha birinchi kelgan javob matni."""
+    for k, key in enumerate(GEMINI_KEYS):
+        for spec in GEMINI_MODELS:
+            model, _, level = spec.partition(":")
+            if _cooldown.get((k, model), 0) > time.time():
+                continue
+            if model.startswith("gemma"):
+                payload = {"contents": [{"role": "user", "parts": [{"text": system + "\n\n" + user}]}],
+                           "generationConfig": {"temperature": 0.2}}
+            else:
+                payload = {
+                    "systemInstruction": {"parts": [{"text": system}]},
+                    "contents": [{"role": "user", "parts": [{"text": user}]}],
+                    "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json",
+                                         "thinkingConfig": {"thinkingLevel": level or "minimal"}},
+                }
+            req = urllib.request.Request(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"x-goog-api-key": key, "content-type": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    data = json.loads(r.read().decode("utf-8"))
+                text = "".join(p.get("text", "") for p in data["candidates"][0]["content"]["parts"]
+                               if not p.get("thought"))
+                if text.strip():
+                    return text
+            except urllib.error.HTTPError as exc:
+                try:
+                    detail = exc.read().decode("utf-8", "replace")
+                except Exception:
+                    detail = ""
+                _rest(k, model, exc.code, detail)
+                logger.info("Gemini %s (kalit %d) ishlamadi (HTTP %s)", model, k + 1, exc.code)
+            except Exception as exc:
+                _rest(k, model, None, "")
+                logger.info("Gemini %s (kalit %d) ishlamadi (%s)", model, k + 1, str(exc)[:120])
+    return None
+
+
+_STYLE_SYSTEM = """You analyse how an Uzbek manhwa (webcomic) translation is written, so that another
+translator can imitate its style. You receive lines OCR'd from the pages of a finished Uzbek translation
+that the editor considers well written (OCR may contain typos - ignore them).
+Return ONLY a JSON object:
+{"guide": [8 to 12 short, concrete rules in English: tone and register; when "sen" vs "siz" is used;
+           typical interjections and exclamations; how sound effects are written; sentence length;
+           punctuation habits; recurring word choices - quote the Uzbek words],
+ "samples": [15 to 20 representative lines copied from the input, obvious OCR typos fixed, each under 120 characters],
+ "summary_uz": [3 to 5 short bullet points IN UZBEK (Latin) describing the style for the editor]}
+Describe only the writing style. Do not include character names or plot details in the guide.
+Ignore adverts, credits, channel or site names and watermarks - never use them as samples."""
+
+
+def learn_style(lines: list[str]) -> dict | None:
+    """Namunaviy tarjima qatorlaridan uslub qo'llanmasi. None - AI javob bermadi."""
+    if not GEMINI_KEYS or not lines:
+        return None
+    text = _gemini_text(_STYLE_SYSTEM, json.dumps(lines[:220], ensure_ascii=False))
+    if not text:
+        return None
+    i = text.find("{")
+    if i < 0:
+        return None
+    try:
+        obj, _ = json.JSONDecoder().raw_decode(text[i:])
+    except ValueError:
+        return None
+    if not isinstance(obj, dict):
+        return None
+    pick = lambda k, n, m: [" ".join(str(x).split())[:m] for x in (obj.get(k) or [])
+                            if isinstance(x, str) and x.strip()][:n]
+    out = {"guide": pick("guide", 14, 220), "samples": pick("samples", 20, 140),
+           "summary_uz": pick("summary_uz", 6, 200)}
+    return out if out["guide"] else None
 
 
 def apply_rules(text: str) -> str:

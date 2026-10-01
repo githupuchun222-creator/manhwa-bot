@@ -576,6 +576,93 @@ async def remove_admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await update.effective_message.reply_text("Bu ID admin emas yoki bot egasini olib bo'lmaydi.")
 
 
+LEARN_PAGES = 15          # /organish: namunadan shuncha sahifa o'qiladi
+
+
+async def learn_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/organish - FAQAT super admin: namunaviy tarjimadan (PDF) yozish uslubini o'rganish."""
+    if not admins.is_superadmin(update.effective_user.id):
+        return                                   # boshqalarga bu buyruq yo'qdek ko'rinadi
+    arg = (update.message.text.partition(" ")[2].strip().lower() if update.message else "")
+    st = admins.get_style()
+    if arg in ("tozalash", "ochir", "o'chir"):
+        admins.put_style(None)
+        uz_translate._cache.clear()
+        context.user_data.pop("learn", None)
+        await update.effective_message.reply_text("🗑 O‘rganilgan uslub o‘chirildi. Bot avvalgi uslubida tarjima qiladi.")
+        return
+    context.user_data["learn"] = True
+    now = ""
+    if st:
+        now = ("\n\n📚 Hozirgi uslub: «" + html.escape(str(st.get("src") or "namuna")) + "»\n"
+               + "\n".join("• " + html.escape(x) for x in (st.get("summary_uz") or [])[:5])
+               + "\n\nYangi fayl yuborsangiz - eskisi o‘rniga yoziladi. O‘chirish: /organish tozalash")
+    await update.effective_message.reply_text(
+        "🎓 <b>O‘rganish</b>\n\nYaxshi tarjima qilingan o‘zbekcha bobni <b>PDF</b> qilib yuboring. "
+        f"Bot undan (birinchi {LEARN_PAGES} sahifa) qanday yozilganini o‘rganadi va keyingi "
+        "tarjimalarni shu uslubda yozadi.\n\nBu buyruq faqat sizga ko‘rinadi." + now,
+        parse_mode="HTML")
+
+
+async def _learn_from_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.message
+    doc = msg.document
+    status = await msg.reply_text("🎓 Namuna yuklab olinmoqda...")
+    try:
+        if (doc.file_size or 0) > MAX_DOWNLOAD_BYTES:
+            data = await bigfile.download(doc.file_id, BOT_TOKEN)
+        else:
+            tg_file = await context.bot.get_file(doc.file_id)
+            buf = io.BytesIO()
+            await tg_file.download_to_memory(out=buf)
+            data = buf.getvalue()
+        if pdf_utils.is_zip(data, doc.file_name):
+            pages = await asyncio.to_thread(pdf_utils.zip_pages, data, LEARN_PAGES)
+        elif pdf_utils.is_pdf(data, doc.file_name):
+            pages = await asyncio.to_thread(
+                lambda: [p[2] for p in pdf_utils.render_pages(data, LEARN_PAGES)])
+        else:
+            pages = [data]
+        lines: list[str] = []
+        seen: set[str] = set()
+        for n, jpeg in enumerate(pages, 1):
+            await _edit_status(status, f"🎓 Namuna o‘qilmoqda: {n}/{len(pages)} sahifa...")
+            items = await asyncio.to_thread(read_page, jpeg, "image/jpeg")
+            for it in items or []:
+                t = " ".join((it.get("original") or "").split())
+                letters = [c for c in t if c.isalpha()]
+                if len(letters) < 6 or sum(c.isascii() for c in letters) / len(letters) < 0.8:
+                    continue                     # juda qisqa yoki lotin bo'lmagan yozuv
+                low = t.lower()
+                if any(w in low for w in ("telegram", "kanal", "t.me", "http", ".com", "@", "scans", "discord")):
+                    continue                     # skanlatsiya guruhining reklamasi/suv belgisi - uslub emas
+                if t.lower() not in seen:
+                    seen.add(t.lower())
+                    lines.append(t[:200])
+        if len(lines) < 15:
+            await _edit_status(status, f"⚠️ Namunadan yetarli matn o‘qilmadi ({len(lines)} qator). "
+                                       "O‘zbekcha tarjima qilingan bobni yuboring: /organish")
+            return
+        await _edit_status(status, f"🎓 {len(lines)} qator o‘qildi. Uslub tahlil qilinmoqda...")
+        st = await asyncio.to_thread(uz_translate.learn_style, lines)
+        if not st:
+            await _edit_status(status, "⚠️ AI hozir javob bermadi (limit yoki band). Birozdan keyin "
+                                       "qayta urinib ko‘ring: /organish")
+            return
+        st["src"] = (doc.file_name or "namuna")[:80]
+        st["ts"] = int(time.time())
+        admins.put_style(st)
+        uz_translate._cache.clear()              # eski tarjimalar qayta ishlatilmasin
+        summary = "\n".join("• " + x for x in st.get("summary_uz") or []) or "(qisqa tavsif yo‘q)"
+        await _edit_status(status, f"✅ O‘rganildi: {len(lines)} qator, {len(st['guide'])} ta uslub qoidasi, "
+                                   f"{len(st['samples'])} ta namuna gap.\n\n{summary}\n\n"
+                                   "Keyingi boblardan boshlab tarjima shu uslubda yoziladi.\n"
+                                   "O‘chirish: /organish tozalash")
+    except Exception as exc:
+        logger.exception("O'rganish bajarilmadi")
+        await _edit_status(status, f"⚠️ O‘rganib bo‘lmadi: {str(exc)[:200]}")
+
+
 async def rules_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/qoida <matn> - AI tarjimoniga ko'rsatma qo'shish; /qoida - ro'yxat."""
     if not admins.is_admin(update.effective_user.id):
@@ -657,6 +744,12 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "So'rovingiz bot egasiga yuborildi."
         )
         await _ask_owner_to_allow(context, update.effective_user)
+        return
+
+    # /organish dan keyingi fayl (faqat super admin): tarjima qilinmaydi - uslub o'rganiladi
+    if msg.document and context.user_data.get("learn") and admins.is_superadmin(user_id):
+        context.user_data.pop("learn", None)
+        await _learn_from_file(update, context)
         return
 
     if shop.ENABLED and await shop.on_file(update, context):
@@ -758,6 +851,7 @@ _owner_contact: dict = {}
 
 SUB_PRICE = os.getenv("SUB_PRICE", "50 000 so'm")
 SUB_WEEK_PRICE = os.getenv("SUB_WEEK_PRICE", "25 000 so'm")
+SUB_WEEK_OLD_PRICE = os.getenv("SUB_WEEK_OLD_PRICE", "")   # chegirma: haftalikning eski narxi
 SUB_OLD_PRICE = os.getenv("SUB_OLD_PRICE", "")      # bo'lsa - ustidan chizilgan eski narx
 
 
@@ -805,6 +899,7 @@ def _sub_panel(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
         return _pack_panel(user_id)
     until = admins.sub_until(user_id)
     old = f"<s>{SUB_OLD_PRICE}</s> " if SUB_OLD_PRICE else ""
+    oldw = f"<s>{SUB_WEEK_OLD_PRICE}</s> " if SUB_WEEK_OLD_PRICE else ""
     if until > time.time():
         status = f"✅ Obunangiz faol: <b>{_date(until)}</b> gacha."
     elif until:
@@ -813,7 +908,7 @@ def _sub_panel(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
         left = max(0, admins.FREE_CHAPTERS - admins.used_chapters(user_id))
         status = f"🎁 Bepul boblar qoldi: <b>{left}</b> ta."
     text = (f"💳 <b>Obuna</b>\n\n"
-            f"🔥 <b>Haftalik</b> - {SUB_WEEK_PRICE} / {admins.SUB_WEEK_DAYS} kun\n"
+            f"🔥 <b>Haftalik</b> - {oldw}{SUB_WEEK_PRICE} / {admins.SUB_WEEK_DAYS} kun\n"
             f"🔥 <b>Oylik</b> - {old}{SUB_PRICE} / {admins.SUB_DAYS} kun\n"
             f"• Obuna muddati davomida cheklovsiz tarjima\n"
             f"• Obunani istalgan vaqt uzaytirish mumkin\n\n{status}\n\n"
@@ -1634,6 +1729,7 @@ def _build_app(token: str) -> Application:
     app.add_handler(CommandHandler("addadmin", add_admin_cmd))
     app.add_handler(CommandHandler("removeadmin", remove_admin_cmd))
     app.add_handler(CommandHandler("qoida", rules_cmd))
+    app.add_handler(CommandHandler(["organish", "learn"], learn_cmd))
     app.add_handler(CommandHandler(["oylik", "haftalik", "ruxsat", "paket"], paid_cmd))
     app.add_handler(CommandHandler(["oylikolish", "ruxsatolish", "paketolish"], paid_cmd))
     app.add_handler(CommandHandler("qoidaochir", remove_rule_cmd))

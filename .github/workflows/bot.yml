@@ -61,6 +61,11 @@ jobs:
           GEMINI_CHUNK: "40"
           GEMINI_MODELS: "gemini-3.5-flash:low,gemini-3.8-flash:low,gemini-3.7-flash:low,gemini-3.6-flash:low,gemini-3-flash-preview:low,gemini-3.5-flash-lite:low,gemini-3.1-flash-lite:low,gemini-3.1-flash-lite-preview:low,gemma-4-31b-it"
           OWNER_USERNAME: sharofovsaid
+          # Chegirma (2026-10-02, egasining e'loni): oylik 50 -> 35 ming, haftalik 25 -> 15 ming
+          SUB_PRICE: "35 000 so'm"
+          SUB_WEEK_PRICE: "15 000 so'm"
+          SUB_OLD_PRICE: "50 000 so'm"
+          SUB_WEEK_OLD_PRICE: "25 000 so'm"
           # 20 MB dan katta fayllar (bigfile.py, MTProto)
           TG_API_ID: ${{ secrets.TG_API_ID }}
           TG_API_HASH: ${{ secrets.TG_API_HASH }}

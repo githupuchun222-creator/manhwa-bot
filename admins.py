@@ -405,3 +405,19 @@ def put_glossary(key: str, names: dict) -> None:
         for old in list(gl)[:len(gl) - GLOSSARY_SERIES_MAX]:
             gl.pop(old, None)
     _save(data)
+
+
+# YOZISH USLUBI (2026-10-02, /organish): super admin yaxshi tarjima qilingan bobni (PDF) yuboradi,
+# AI undan uslub qoidalari va namuna gaplarni ajratadi - keyingi tarjimalar shu uslubda yoziladi.
+def get_style() -> dict:
+    st = _load().get("style")
+    return dict(st) if isinstance(st, dict) else {}
+
+
+def put_style(style: dict | None) -> None:
+    data = _load()
+    if style:
+        data["style"] = style
+    else:
+        data.pop("style", None)
+    _save(data)
