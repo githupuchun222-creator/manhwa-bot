@@ -230,7 +230,7 @@ async def show_pay(update: Update, context, edit=False) -> None:
     if admins.PACKS_ON:
         body = (free + f"💰 Balansingiz: <b>{admins.balance(uid)} ta bob</b>\n\n"
                 "📦 <b>Paketlar</b> (oylik obuna yo‘q, muddatsiz):\n"
-                + admins.pack_lines() + "\n\n"
+                + admins.pack_block() + "\n\n"
                 "• Har tarjima qilingan bob balansdan bitta yechiladi\n"
                 "• Ish bajarilmasa (xato/bekor) - bob qaytariladi\n\n"
                 "<b>To‘lov:</b> adminga yozing, to‘lovdan keyin admin paketni qo‘shadi "

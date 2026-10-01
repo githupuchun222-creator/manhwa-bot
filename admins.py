@@ -157,6 +157,8 @@ def add_used(user_id: int, delta: int = 1) -> None:
 import time as _time
 
 SUB_DAYS = int(os.getenv("SUB_DAYS", "30") or 30)
+# HAFTALIK OBUNA (2026-10-01, foydalanuvchi talabi): arzonroq, qisqa muddatli tarif.
+SUB_WEEK_DAYS = int(os.getenv("SUB_WEEK_DAYS", "7") or 7)
 
 
 def _subs(data: dict) -> dict:
@@ -269,14 +271,30 @@ def _parse_packs(raw: str) -> list[tuple[int, int]]:
 
 PACKS = _parse_packs(os.getenv("PACKS", ""))
 PACKS_ON = bool(PACKS)
+# CHEGIRMA (2026-10-01, foydalanuvchi: "bu oy uchun chegirma deginda"): PACKS_OLD - ustidan
+# chiziladigan eski narx, PACKS_NOTE - chegirma matni. Ikkisi ham sozlamada (env), kodda emas -
+# chegirma tugaganda PACKS_OLD/PACKS_NOTE ni olib tashlash yetarli (yoki matnni o'zgartirish).
+PACKS_OLD = dict(_parse_packs(os.getenv("PACKS_OLD", "")))
+PACKS_NOTE = os.getenv("PACKS_NOTE", "").strip()
 
 
 def money(summa: int) -> str:
     return f"{summa:,}".replace(",", " ") + " so'm"
 
 
+def _price_text(n: int, price: int) -> str:
+    """Chegirma bo'lsa: eski narx ustidan chizilgan + yangisi."""
+    old = PACKS_OLD.get(n, 0)
+    return f"<s>{money(old)}</s> <b>{money(price)}</b>" if old > price else f"<b>{money(price)}</b>"
+
+
 def pack_lines(bullet: str = "• ") -> str:
-    return chr(10).join(f"{bullet}<b>{n} ta bob</b> - {money(p)}" for n, p in PACKS)
+    return chr(10).join(f"{bullet}{n} ta bob - {_price_text(n, p)}" for n, p in PACKS)
+
+
+def pack_block(bullet: str = "• ") -> str:
+    """Chegirma matni (bo'lsa) + paketlar ro'yxati."""
+    return (f"{PACKS_NOTE}\n" if PACKS_NOTE else "") + pack_lines(bullet)
 
 
 def balance(user_id: int) -> int:

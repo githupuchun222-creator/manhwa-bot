@@ -210,9 +210,10 @@ def _screen(name: str, user_id: int) -> tuple[str, InlineKeyboardMarkup]:
                 [_btn("ℹ️ Yordam", "m:yordam")]]
         if admins.PACKS_ON:
             rows.insert(0, [_btn(f"💰 Boblar paketi - {admins.PACKS[0][0]} bob "
-                                 f"{admins.money(admins.PACKS[0][1])}", "m:obuna")])
+                                 f"{admins.money(admins.PACKS[0][1])}"
+                                 + (" 🔥" if admins.PACKS_NOTE else ""), "m:obuna")])
         elif admins.FREE_CHAPTERS:
-            rows.insert(0, [_btn(f"💳 Oylik obuna - chegirmada {SUB_PRICE} 🔥", "m:obuna")])
+            rows.insert(0, [_btn(f"💳 Obuna - haftalik {SUB_WEEK_PRICE} 🔥", "m:obuna")])
     if admins.is_superadmin(user_id):
         rows.append([_btn("👑 Adminlar", "m:admins")]
                     + ([_btn(_pay_btn(), "m:do:paid")] if admins.FREE_CHAPTERS or admins.PACKS_ON else []))
@@ -756,6 +757,7 @@ _owner_contact: dict = {}
 
 
 SUB_PRICE = os.getenv("SUB_PRICE", "50 000 so'm")
+SUB_WEEK_PRICE = os.getenv("SUB_WEEK_PRICE", "25 000 so'm")
 SUB_OLD_PRICE = os.getenv("SUB_OLD_PRICE", "")      # bo'lsa - ustidan chizilgan eski narx
 
 
@@ -782,7 +784,7 @@ def _pack_panel(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
               "🎁 Bepul bobingizdan foydalandingiz.")
     text = ("💰 <b>Boblar paketi</b>\n\n"
             "Oylik obuna yo'q - to'lov faqat tarjima qilinadigan boblar soniga:\n"
-            + admins.pack_lines() + "\n\n"
+            + admins.pack_block() + "\n\n"
             "• Paket muddatsiz: boblar tugaguncha ishlatasiz\n"
             "• Har tarjima qilingan bob balansdan bitta yechiladi\n"
             "• Ish bajarilmasa (xato/bekor) - bob qaytariladi\n\n"
@@ -810,9 +812,11 @@ def _sub_panel(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
     else:
         left = max(0, admins.FREE_CHAPTERS - admins.used_chapters(user_id))
         status = f"🎁 Bepul boblar qoldi: <b>{left}</b> ta."
-    text = (f"💳 <b>Oylik obuna</b>\n\n"
-            f"🔥 Chegirmada: {old}<b>{SUB_PRICE}</b> / {admins.SUB_DAYS} kun\n"
-            f"• {admins.SUB_DAYS} kun davomida cheklovsiz tarjima\n\n{status}\n\n"
+    text = (f"💳 <b>Obuna</b>\n\n"
+            f"🔥 <b>Haftalik</b> - {SUB_WEEK_PRICE} / {admins.SUB_WEEK_DAYS} kun\n"
+            f"🔥 <b>Oylik</b> - {old}{SUB_PRICE} / {admins.SUB_DAYS} kun\n"
+            f"• Obuna muddati davomida cheklovsiz tarjima\n"
+            f"• Obunani istalgan vaqt uzaytirish mumkin\n\n{status}\n\n"
             f"To'lov uchun pastdagi tugmani bosib, egasiga yozing va ID'ingizni yuboring: "
             f"<code>{user_id}</code>")
     rows = []
@@ -843,11 +847,11 @@ async def _ask_owner_to_pay(context, user) -> None:
             text=(f"💳 Bepul bobi tugagan foydalanuvchi:\n\n"
                   f"Ism: {user.full_name or user.id}{handle}\nID: {user.id}\n\n"
                   + ("To'lov qilsa - pastdagi tugmalardan paketini bering."
-                     if admins.PACKS_ON else "To'lov qilsa - pastdagi tugma bilan 1 oylik bering.")),
+                     if admins.PACKS_ON else "To'lov qilsa - pastdagi tugmalardan birini bosing.")),
             reply_markup=InlineKeyboardMarkup(
                 [_pack_buttons(user.id)] if admins.PACKS_ON else
-                [[InlineKeyboardButton("✅ To'ladi - 1 oylik berish",
-                                       callback_data=f"paid:{user.id}")]]))
+                [[InlineKeyboardButton(f"✅ 1 hafta ({SUB_WEEK_PRICE})", callback_data=f"paidw:{user.id}")],
+                 [InlineKeyboardButton(f"✅ 1 oy ({SUB_PRICE})", callback_data=f"paid:{user.id}")]]))
     except TelegramError as exc:
         logger.warning("Egasiga to'lov xabari yuborilmadi: %s", exc)
 
@@ -877,7 +881,8 @@ async def on_paid_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     await query.answer()
     action, _, raw = query.data.partition(":")
-    await _set_paid(context, int(raw), action == "paid", query=query)
+    days = admins.SUB_WEEK_DAYS if action == "paidw" else None
+    await _set_paid(context, int(raw), action in ("paid", "paidw"), query=query, days=days)
 
 
 async def _label(context, uid: int) -> str:
@@ -889,7 +894,8 @@ async def _label(context, uid: int) -> str:
         return str(uid)
 
 
-async def _set_paid(context, target: int, grant: bool, query=None, message=None, n: int = 0) -> None:
+async def _set_paid(context, target: int, grant: bool, query=None, message=None, n: int = 0,
+                    days: int | None = None) -> None:
     who = await _label(context, target)
     if admins.PACKS_ON:                  # oylik obuna emas - balansga N ta bob
         if grant:
@@ -913,8 +919,9 @@ async def _set_paid(context, target: int, grant: bool, query=None, message=None,
             await message.reply_text(text)
         return
     if grant:
-        until = admins.add_paid(target)
-        text = f"✅ {who} ({target}) - obuna {_date(until)} gacha."
+        until = admins.add_paid(target, days)
+        label = f"{days} kunlik" if days else f"{admins.SUB_DAYS} kunlik"
+        text = f"✅ {who} ({target}) - {label} berildi, obuna {_date(until)} gacha."
         try:
             await context.bot.send_message(
                 target, f"✅ To'lovingiz qabul qilindi! Obuna faol: {_date(until)} gacha.\n"
@@ -941,6 +948,7 @@ async def paid_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     cmd = (update.effective_message.text or "").split()[0].lower()
     grant = "olish" not in cmd
+    days = admins.SUB_WEEK_DAYS if "haftalik" in cmd else None
     if context.args:
         target = admins.find_user(context.args[0])
         if target is None:
@@ -949,7 +957,7 @@ async def paid_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 "yoki uning ID raqamini yuboring (ID'ni u botdagi 💳 Oylik obuna bo'limida ko'radi).")
             return
         n = int(context.args[1]) if len(context.args) > 1 and context.args[1].isdigit() else 0
-        await _set_paid(context, target, grant, message=update.effective_message, n=n)
+        await _set_paid(context, target, grant, message=update.effective_message, n=n, days=days)
         return
     if not grant:
         await update.effective_message.reply_text(
@@ -972,7 +980,7 @@ async def paid_list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                             _btn("🗑", f"unpaid:{uid}")])
         buttons.append([_btn("➕ Odam qo'shish (paket)", "m:do:subadd")])
         await update.effective_message.reply_text(
-            "💰 <b>Paket olganlar</b>\n\n" + admins.pack_lines() + "\n\n"
+            "💰 <b>Paket olganlar</b>\n\n" + admins.pack_block() + "\n\n"
             + ("\n".join(html.escape(x) for x in lines) or "Hozircha hech kim.")
             + "\n\nQo'shish: tugmani bosib @username yoki ID yuboring, yoki /paket @username 200",
             reply_markup=InlineKeyboardMarkup(buttons), parse_mode="HTML")
@@ -985,12 +993,14 @@ async def paid_list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             lines.append(f"✅ {who} - {_date(until)} gacha ({int((until - now) // 86400)} kun qoldi)")
         else:
             lines.append(f"⌛ {who} - tugagan ({_date(until)})")
-        buttons.append([InlineKeyboardButton(f"🔁 +1 oy: {who}"[:60], callback_data=f"paid:{uid}"),
+        buttons.append([InlineKeyboardButton(f"🔁 +1 hafta: {who}"[:40], callback_data=f"paidw:{uid}"),
+                        InlineKeyboardButton("+1 oy", callback_data=f"paid:{uid}"),
                         InlineKeyboardButton("🗑", callback_data=f"unpaid:{uid}")])
-    buttons.append([_btn("➕ Odam qo'shish (1 oy)", "m:do:subadd")])
+    buttons.append([_btn("➕ Odam qo'shish", "m:do:subadd")])
     await update.effective_message.reply_text(
-        "📅 <b>Bir oylik obunachilar</b>\n\n" + ("\n".join(html.escape(x) for x in lines) or "Hozircha hech kim.") +
-        "\n\nQo'shish: tugmani bosib @username yoki ID yuboring, yoki /oylik @username",
+        f"📅 <b>Obunachilar</b>\n(haftalik {SUB_WEEK_PRICE} · oylik {SUB_PRICE})\n\n" + ("\n".join(html.escape(x) for x in lines) or "Hozircha hech kim.") +
+        "\n\nQo'shish: tugmani bosib @username yoki ID yuboring.\n"
+        "Buyruq bilan: /haftalik @username · /oylik @username · /oylikolish @username",
         reply_markup=InlineKeyboardMarkup(buttons), parse_mode="HTML")
 
 
@@ -1618,7 +1628,7 @@ def _build_app(token: str) -> Application:
     app.add_handler(CommandHandler("addadmin", add_admin_cmd))
     app.add_handler(CommandHandler("removeadmin", remove_admin_cmd))
     app.add_handler(CommandHandler("qoida", rules_cmd))
-    app.add_handler(CommandHandler(["oylik", "ruxsat", "paket"], paid_cmd))
+    app.add_handler(CommandHandler(["oylik", "haftalik", "ruxsat", "paket"], paid_cmd))
     app.add_handler(CommandHandler(["oylikolish", "ruxsatolish", "paketolish"], paid_cmd))
     app.add_handler(CommandHandler("qoidaochir", remove_rule_cmd))
     app.add_handler(MessageHandler(
@@ -1638,7 +1648,7 @@ def _build_app(token: str) -> Application:
     app.add_handler(CallbackQueryHandler(on_queue_button, pattern=r"^qcancel:"))
     app.add_handler(CallbackQueryHandler(on_menu_button, pattern=r"^m:"))
     app.add_handler(CallbackQueryHandler(shop.on_button, pattern=r"^sh:"))
-    app.add_handler(CallbackQueryHandler(on_paid_button, pattern=r"^(paid|unpaid):\d+$"))
+    app.add_handler(CallbackQueryHandler(on_paid_button, pattern=r"^(paid|paidw|unpaid):\d+$"))
     app.add_handler(CallbackQueryHandler(on_pack_button, pattern=r"^pack:\d+:\d+$"))
     app.add_handler(CallbackQueryHandler(on_rule_delete, pattern=r"^rdel:\d+$"))
     app.add_handler(CallbackQueryHandler(on_admin_button, pattern=r"^(allow|deny|remove):"))
