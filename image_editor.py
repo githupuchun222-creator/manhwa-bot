@@ -446,6 +446,22 @@ def _surrounding_region(close: np.ndarray, text_box: tuple[int, int, int, int]) 
     return labels == best
 
 
+def _box_in_shape(box, shape) -> float:
+    """Matn qutisining qancha qismi shu pufakcha ICHIDA (0..1)."""
+    if shape is None:
+        return 1.0
+    ox, oy, fill = shape
+    h, w = fill.shape
+    x1, y1, x2, y2 = (int(v) for v in box)
+    a, b = max(0, x1 - ox), max(0, y1 - oy)
+    c, d = min(w, x2 - ox), min(h, y2 - oy)
+    if c - a <= 0 or d - b <= 0:
+        return 0.0
+    sub = fill[b:d, a:c]
+    total = max(1, (x2 - x1) * (y2 - y1))
+    return float(sub.sum()) / total
+
+
 def _leaked(shape, box) -> bool:
     """Sizib chiqqan hudud: pufakcha (ingichka och kontur) sahifa foni/rasm bilan qo'shilib ketgan -
     qidiruv oynasining (yoki sahifaning) 2+ tomoniga yetgan va matndan 3 barobardan katta. Bunda
@@ -827,6 +843,56 @@ def _layout_in_shape(draw, text: str, mask: np.ndarray, cx: int, cy: int, size: 
     return None
 
 
+def _inscribed_box(shape, tbox) -> tuple[int, int, int, int] | None:
+    """Pufakcha ICHIGA to'liq sig'adigan eng katta to'rtburchak (asl matn markazi atrofida).
+
+    `_draw_in_shape` uzun tarjimani shaklga joylay olmasa, ilgari oddiy `inner` qutisiga
+    qaytilardi - u pufakchadan kengroq bo'lishi mumkin va matn tashqariga toshardi
+    (foydalanuvchi namunasi, 2026-10-01). Bu quti butunlay pufakcha ichida bo'lishi
+    KAFOLATLANGAN, shuning uchun matn hech qachon chiqib ketmaydi.
+    """
+    if shape is None:
+        return None
+    ox, oy, fill = shape
+    h, w = fill.shape
+    cx = int((tbox[0] + tbox[2]) / 2) - ox
+    cy = int((tbox[1] + tbox[3]) / 2) - oy
+    cy = min(max(cy, 0), h - 1)
+    cx = min(max(cx, 0), w - 1)
+    if not fill[cy, cx]:
+        row = np.flatnonzero(fill[cy])
+        if row.size == 0:
+            return None
+        cx = int(row[np.abs(row - cx).argmin()])
+    best = None
+    common = fill[cy].copy()
+    for hh in range(0, h):
+        top, bot = cy - hh, cy + hh
+        if top < 0 or bot >= h:
+            break
+        if hh:
+            common &= fill[top]
+            common &= fill[bot]
+        if not common[cx]:
+            break
+        a = cx
+        while a > 0 and common[a - 1]:
+            a -= 1
+        b = cx
+        while b + 1 < w and common[b + 1]:
+            b += 1
+        area = (b - a + 1) * (2 * hh + 1)
+        if best is None or area > best[0]:
+            best = (area, a, b, top, bot)
+    if best is None:
+        return None
+    _, a, b, top, bot = best
+    pad = 3
+    if b - a < 2 * pad + 10 or bot - top < 2 * pad + 10:
+        return None
+    return (ox + a + pad, oy + top + pad, ox + b - pad, oy + bot - pad)
+
+
 def _draw_in_shape(draw, shape, text_box, text: str, color, max_size: int | None) -> bool:
     """Matnni pufakcha SHAKLIGA moslab, asl matn joyiga yozadi. Bo'lmasa False."""
     ox, oy, _ = shape
@@ -886,9 +952,10 @@ def _flat_area(arr: np.ndarray, box: tuple[int, int, int, int],
     if sub.size == 0:
         return None
     close = (np.abs(sub.astype(np.int16) - np.array(flat, np.int16)).max(axis=2) < 40)
-    # harflar ham "tekis emas" - ularni yopib, hudud uzilmasin
-    close = cv2.morphologyEx(close.astype(np.uint8), cv2.MORPH_CLOSE,
-                             np.ones((9, 9), np.uint8)).astype(bool)
+    # Harflar hududni uzmasin: matn qutisi ichini "fon" deb belgilaymiz. Avval morfologik yopish
+    # ishlatilardi - u INGICHKA pufakcha konturini ham ko'prik qilib yuborardi va hudud butun
+    # sahifaga tarqab ketardi, natijada matn pufakchadan tashqariga chiqardi.
+    close[max(0, y1 - Y1):max(0, y2 - Y1), max(0, x1 - X1):max(0, x2 - X1)] = True
     n, lab = cv2.connectedComponents(close.astype(np.uint8), 8)
     cy, cx = (y1 + y2) // 2 - Y1, (x1 + x2) // 2 - X1
     if not (0 <= cy < lab.shape[0] and 0 <= cx < lab.shape[1]):
@@ -1093,19 +1160,17 @@ def _inpaint_text(arr: np.ndarray, box: tuple[int, int, int, int],
 
         flat = _flat_bg(arr, (x1, y1, x2, y2)) if FONT_STYLES else None
         if flat is not None:
-            # Tekis fon (oq pufakcha/sahifa): fondan farq qiladigan piksel - harf; fon rangi bilan
-            # bo'yaladi (xira iz qolmaydi). Quti chetiga tegib turgan bo'lak - harf emas, pufakcha
-            # konturi/ramka - o'chirilmaydi. Bo'laklar KENGAYTIRISHDAN OLDIN ajratiladi.
+            # Tekis fon (oq pufakcha/sahifa): faqat ASL MATN QUTISI ichidagi, fondan farq qiladigan
+            # piksellar fon rangi bilan bo'yaladi. Chet (padding) tegilmaydi - u yerdan pufakcha
+            # konturi o'tishi mumkin, uni o'chirsak chiziqda uzilish qolardi. Avvalgi "bo'lak
+            # chetga tegsa - kontur" qoidasi tor qutidagi harfni ham saqlab qolardi.
             raw = (np.abs(region.astype(np.int16) - np.array(flat, np.int16)).max(axis=2) > 40)
-            n, lab, st, _ = cv2.connectedComponentsWithStats(raw.astype(np.uint8), 8)
-            hh, ww = raw.shape
-            for i in range(1, n):
-                x, y, w_, h_ = st[i, 0], st[i, 1], st[i, 2], st[i, 3]
-                touches = x <= 0 or y <= 0 or x + w_ >= ww or y + h_ >= hh
-                # faqat UZUN bo'lak (kontur chizig'i) saqlanadi; chetga tegib turgan italik harf o'chadi
-                if touches and (w_ > 0.45 * ww or h_ > 0.6 * hh):
-                    raw[lab == i] = False
-            m = cv2.dilate(raw.astype(np.uint8), np.ones((3, 3), np.uint8), iterations=2) > 0
+            zone = np.zeros_like(raw)
+            ob = [int(v) for v in box]
+            zone[max(0, ob[1] - y1):max(0, ob[3] - y1), max(0, ob[0] - x1):max(0, ob[2] - x1)] = True
+            k3 = np.ones((3, 3), np.uint8)
+            near = cv2.dilate(zone.astype(np.uint8), k3, iterations=2) > 0
+            m = (cv2.dilate((raw & zone).astype(np.uint8), k3, iterations=2) > 0) & near
             region[m] = flat
             return (x1, y1, x2, y2)
         mask = cv2.dilate(mask, np.ones((3, 3), np.uint8), iterations=3 if FONT_STYLES else 2)
@@ -1262,7 +1327,9 @@ def _draw_job(out: Image.Image, draw, job, off: tuple[int, int]) -> None:
             shape = (shape[0] - ox, shape[1] - oy, shape[2])
         tbox = (tbox[0] - ox, tbox[1] - oy, tbox[2] - ox, tbox[3] - oy)
         if shape is None or not _draw_in_shape(draw, shape, tbox, text, color, extra):
-            _draw_block(draw, box, text, color, max_size=extra)
+            # Shaklga joylay olmadik - pufakcha ichiga KAFOLATLI sig'adigan quti
+            inside = _inscribed_box(shape, tbox) if FONT_STYLES else None
+            _draw_block(draw, inside or box, text, color, max_size=extra)
     elif mode == "flat":
         _draw_block(draw, box, text, _text_color_for(bg_color), max_size=extra)
     elif mode == "system":
@@ -1393,6 +1460,11 @@ def render_translation(image_bytes: bytes, translations: list[dict], quality: in
                 else:
                     if filled is not None and filled[2] is not None and _leaked(filled[2], box):
                         filled = None
+            if filled is not None and _box_in_shape(box, filled[2]) < 0.5:
+                # Matn bu pufakchaning TASHQARISIDA (yonidagi qo'lyozma izoh): uni pufakcha
+                # matni deb olsak, ikkalasi bitta blokka qo'shilib, pufakchaga tiqilardi
+                # (foydalanuvchi namunasi, 2026-10-01). Alohida, o'z joyida chiziladi.
+                filled = None
             if filled is not None:
                 arr[:] = trial
         else:
@@ -1449,6 +1521,10 @@ def render_translation(image_bytes: bytes, translations: list[dict], quality: in
                     if lim[0] <= cx <= lim[2] and lim[1] <= cy <= lim[3]:
                         half_w = min(cx - lim[0], lim[2] - cx)
                         half_h = min(cy - lim[1], lim[3] - cy)
+                        # Oxirgi kafolat: pufakcha chizig'i uzuq bo'lsa hudud butun sahifaga
+                        # sizib ketishi mumkin - matn asl yozuv joyidan ortiq yoyilmasin.
+                        half_w = min(half_w, (box[2] - box[0]) * 0.58)
+                        half_h = min(half_h, (box[3] - box[1]) * 1.6)
                         if half_w * 2 > area[2] - area[0] and half_h * 2 > area[3] - area[1]:
                             area = (int(cx - half_w), int(cy - half_h),
                                     int(cx + half_w), int(cy + half_h))
