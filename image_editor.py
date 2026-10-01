@@ -516,7 +516,17 @@ def _fill_bubble(arr: np.ndarray, box: tuple[int, int, int, int],
     if RENDER_V2 and _is_gradient(sub, fill, bg):
         _erase_text_smooth(sub, fill, (bx1 - x1, by1 - y1, bx2 - x1, by2 - y1), bg)
     else:
-        sub[fill] = bg      # tekis pufakcha: bitta rang - eng toza natija (iz qolmaydi)
+        if FONT_STYLES:
+            # Faqat yozuv atrofi bo'yaladi (matn qutisi + zaxira). Butun hudud bo'yalsa, "tukli"
+            # chaqnash pufakchaning och chetlari ham oqarib, qidiruv oynasi chegarasida to'g'ri
+            # to'rtburchak qirra qolardi (foydalanuvchi skrinshoti, 2026-10-01).
+            zone = np.zeros_like(fill)
+            # zaxira: qiya (italik) harflar OCR qutisidan chiqib turadi - eni bo'yicha kengroq
+            zx, zy = max(18, int(bw * 0.12)), max(16, int(bh * 0.3))
+            zone[max(0, by1 - y1 - zy):by2 - y1 + zy, max(0, bx1 - x1 - zx):bx2 - x1 + zx] = True
+            sub[fill & zone] = bg
+        else:
+            sub[fill] = bg      # tekis pufakcha: bitta rang - eng toza natija (iz qolmaydi)
     shape = (x1, y1, fill)          # pufakcha shakli - matnni shu shaklga moslab yozish uchun
 
     # Matn uchun joy: faqat SHU matn atrofidagi (vertikal tasma) va uning ostidagi
@@ -942,7 +952,9 @@ def _inpaint_text(arr: np.ndarray, box: tuple[int, int, int, int]) -> tuple[int,
             hh, ww = raw.shape
             for i in range(1, n):
                 x, y, w_, h_ = st[i, 0], st[i, 1], st[i, 2], st[i, 3]
-                if x <= 0 or y <= 0 or x + w_ >= ww or y + h_ >= hh:
+                touches = x <= 0 or y <= 0 or x + w_ >= ww or y + h_ >= hh
+                # faqat UZUN bo'lak (kontur chizig'i) saqlanadi; chetga tegib turgan italik harf o'chadi
+                if touches and (w_ > 0.45 * ww or h_ > 0.6 * hh):
                     raw[lab == i] = False
             m = cv2.dilate(raw.astype(np.uint8), np.ones((3, 3), np.uint8), iterations=2) > 0
             region[m] = flat
@@ -1195,7 +1207,7 @@ def render_translation(image_bytes: bytes, translations: list[dict], quality: in
             # Hudud sahifa/rasmga sizib chiqqan bo'lsa (_leaked) - pufakcha bo'yalmaydi.
             trial = arr.copy()
             filled = _fill_bubble(trial, box, bg_color)
-            if filled is not None and filled[1]:
+            if filled is None or filled[1]:
                 for grow in (2.5, 4.0):
                     t2 = arr.copy()
                     bigger = _fill_bubble(t2, box, bg_color, grow=grow)
@@ -1203,7 +1215,7 @@ def render_translation(image_bytes: bytes, translations: list[dict], quality: in
                         trial, filled = t2, bigger
                         break
                 else:
-                    if filled[2] is not None and _leaked(filled[2], box):
+                    if filled is not None and filled[2] is not None and _leaked(filled[2], box):
                         filled = None
             if filled is not None:
                 arr[:] = trial
