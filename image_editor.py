@@ -916,7 +916,58 @@ def _flat_bg(arr: np.ndarray, box: tuple[int, int, int, int]) -> tuple[int, int,
         return None
     med = np.median(ring, axis=0)
     close = (np.abs(ring.astype(np.int16) - med.astype(np.int16)).max(axis=1) < 18).mean()
-    return tuple(int(v) for v in med) if close > 0.9 else None
+    if close <= 0.9:
+        return None
+    # Tekis halqa hali "tekis fon" degani emas: silliq GRADIENT (osmon, pastel fon) ham ingichka
+    # halqada tekis ko'rinadi, lekin butun quti bo'ylab rang o'zgaradi - bitta rang bilan bo'yalsa
+    # to'rtburchak dog' qolardi (foydalanuvchi namunasi, 2026-10-01). Qarama-qarshi tomonlarni
+    # solishtiramiz: farq sezilarli bo'lsa - gradient, _fill_masked (yuza modeli) ishlatiladi.
+    sides = []
+    for part in (arr[max(0, y1 - p):y1, x1:x2], arr[y2:min(H, y2 + p), x1:x2],
+                 arr[y1:y2, max(0, x1 - p):x1], arr[y1:y2, x2:min(W, x2 + p)]):
+        if part.size:
+            sides.append(np.median(part.reshape(-1, 3), axis=0))
+    if len(sides) >= 2:
+        sides = np.array(sides, np.int16)
+        if int(np.abs(sides.max(axis=0) - sides.min(axis=0)).max()) > 12:
+            return None
+    return tuple(int(v) for v in med)
+
+
+def _poly_surface(ctx: np.ndarray, m: np.ndarray, known: np.ndarray):
+    """Silliq fonni (osmon, tovlanuvchi rang) 2-darajali yuza bilan modellab, niqob ichini
+    to'ldiradi. Blur bilan to'ldirishda chetdagi ranglar o'rtachalanib, matn o'rnida kulrang
+    TO'RTBURCHAK dog' qolardi (foydalanuvchi namunasi, 2026-10-01: pastel kuz sahifasi).
+    Yuza modeli gradientni uzilishsiz davom ettiradi.
+
+    Returns: (to'ldirilgan rasm, moslik xatosi) yoki None - fon silliq emas.
+    """
+    ys, xs = np.nonzero(known)
+    if len(ys) < 200:
+        return None
+    h, w = m.shape
+    my, mx = np.nonzero(m)
+    if len(my) == 0:
+        return None
+    if len(ys) > 40000:                      # tezlik uchun namuna olish
+        sel = np.random.default_rng(0).choice(len(ys), 40000, replace=False)
+        ys, xs = ys[sel], xs[sel]
+
+    def terms(xx, yy):
+        xx = xx / max(1, w)
+        yy = yy / max(1, h)
+        return np.stack([np.ones_like(xx), xx, yy, xx * xx, xx * yy, yy * yy], axis=1)
+
+    A = terms(xs.astype(np.float32), ys.astype(np.float32))
+    Am = terms(mx.astype(np.float32), my.astype(np.float32))
+    out = ctx.copy()
+    resid = 0.0
+    for c in range(3):
+        target = ctx[ys, xs, c]
+        coef, *_ = np.linalg.lstsq(A, target, rcond=None)
+        resid = max(resid, float(np.std(target - A @ coef)))
+        out[my, mx, c] = Am @ coef
+    return out, resid
 
 
 def _fill_masked(arr: np.ndarray, box: tuple[int, int, int, int], mask: np.ndarray,
@@ -935,6 +986,8 @@ def _fill_masked(arr: np.ndarray, box: tuple[int, int, int, int], mask: np.ndarr
 
     H, W = arr.shape[:2]
     x1, y1, x2, y2 = box
+    if margin:                                # katta blokka kengroq kontekst kerak
+        margin = max(margin, int(0.6 * max(x2 - x1, y2 - y1)))
     X1, Y1, X2, Y2 = max(0, x1 - margin), max(0, y1 - margin), min(W, x2 + margin), min(H, y2 + margin)
     ctx = arr[Y1:Y2, X1:X2].astype(np.float32)
     m = np.zeros(ctx.shape[:2], bool)
@@ -973,6 +1026,9 @@ def _fill_masked(arr: np.ndarray, box: tuple[int, int, int, int], mask: np.ndarr
         tex[ys[use], xs[use]] = grain[sy[use], sx[use]]
         need[ys[use], xs[use]] = False
     filled = np.clip(est + tex * 0.9, 0, 255)
+    poly = _poly_surface(ctx, m, known > 0)
+    if poly is not None and poly[1] < 14:     # fon silliq (osmon/gradient) - model aniq moslashdi
+        filled = np.clip(poly[0] + tex * 0.9, 0, 255)
     # yumshoq chet: niqob 1-2 px ichkariga qarab to'liq
     alpha = cv2.GaussianBlur(m.astype(np.float32), (5, 5), 0)
     alpha = np.maximum(alpha, m * 0.0)
