@@ -317,3 +317,30 @@ def free_left(user_id: int) -> int:
 def is_paying(user_id: int) -> bool:
     """Pullik foydalanuvchi: oylik obunasi faol yoki paket balansi bor."""
     return is_paid(user_id) or (PACKS_ON and balance(user_id) > 0)
+
+
+# SERIYA LUG'ATI (2026-10-01): {seriya_kaliti: {"LIM DUWON": "Lim Duvon", ...}}. Ismlar boblar
+# orasida ham bir xil bo'lsin. Kalit - foydalanuvchi + seriya nomi, shuning uchun bir odamning
+# lug'ati boshqasiga o'tmaydi.
+GLOSSARY_SERIES_MAX = 60
+
+
+def get_glossary(key: str) -> dict:
+    g = _load().get("glossary", {}).get(key)
+    return dict(g) if isinstance(g, dict) else {}
+
+
+def put_glossary(key: str, names: dict) -> None:
+    if not names:
+        return
+    data = _load()
+    gl = data.setdefault("glossary", {})
+    cur = gl.get(key) if isinstance(gl.get(key), dict) else {}
+    merged = {**names, **cur}                 # avval saqlangan yozilish ustun (barqarorlik)
+    if merged == cur:
+        return
+    gl[key] = merged
+    if len(gl) > GLOSSARY_SERIES_MAX:         # eng eskilarini tashlash
+        for old in list(gl)[:len(gl) - GLOSSARY_SERIES_MAX]:
+            gl.pop(old, None)
+    _save(data)

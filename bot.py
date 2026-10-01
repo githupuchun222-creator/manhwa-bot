@@ -1224,7 +1224,8 @@ def _archive(job: str, name: str, data: bytes) -> None:
 CHAPTER_BATCH = os.getenv("CHAPTER_BATCH", "") == "1"
 
 
-async def _chapter_batch(pages, limit: int, budget: dict, status_msg, t0: float):
+async def _chapter_batch(pages, limit: int, budget: dict, status_msg, t0: float,
+                         report: dict | None = None):
     reads: list[list[dict]] = []
     failed: list[int] = []
     for num, _total, jpeg in pages:
@@ -1257,7 +1258,7 @@ async def _chapter_batch(pages, limit: int, budget: dict, status_msg, t0: float)
         if not items:
             return jpeg
         async with sem:
-            return await asyncio.to_thread(render_translation, jpeg, items, PDF_JPEG_QUALITY)
+            return await asyncio.to_thread(render_translation, jpeg, items, PDF_JPEG_QUALITY, report)
 
     out = await asyncio.gather(*(draw(jpeg, items) for (_, _, jpeg), items in zip(pages, per_page)))
     return list(out), sum(len(i) for i in per_page), failed
@@ -1297,6 +1298,10 @@ async def _process_pdf(update: Update | None, context: ContextTypes.DEFAULT_TYPE
         await status_msg.edit_text("PDF sahifalarini rasmga aylantirib bo'lmadi.")
         return
 
+    # Seriya lug'ati: ismlar shu seriyaning oldingi boblaridagidek yoziladi
+    uz_translate.set_series(chat_id, src_name)
+    uz_translate.reset_stats()
+    report: dict = {}
     budget = {"vlm": VLM_BUDGET_PER_PDF}
     out_pages: list[bytes] = []
     failed: list[int] = []
@@ -1309,10 +1314,11 @@ async def _process_pdf(update: Update | None, context: ContextTypes.DEFAULT_TYPE
         items = await asyncio.to_thread(finish_page, read) if read else []
         if not items:
             return jpeg, 0                    # matnsiz sahifa - aslicha (PDF to'liq bo'lsin)
-        return await asyncio.to_thread(render_translation, jpeg, items, PDF_JPEG_QUALITY), len(items)
+        drawn = await asyncio.to_thread(render_translation, jpeg, items, PDF_JPEG_QUALITY, report)
+        return drawn, len(items)
 
     if CHAPTER_BATCH:
-        out_pages, texts, failed = await _chapter_batch(pages, limit, budget, status_msg, t0)
+        out_pages, texts, failed = await _chapter_batch(pages, limit, budget, status_msg, t0, report)
     pending: list[asyncio.Task] = []
     for num, _total, jpeg in ([] if CHAPTER_BATCH else pages):
         elapsed = int(time.time() - t0)
@@ -1333,7 +1339,8 @@ async def _process_pdf(update: Update | None, context: ContextTypes.DEFAULT_TYPE
         out_pages.append(page_bytes)
         texts += n
 
-    await _edit_status(status_msg, "PDF yig'ilmoqda...")
+    await _edit_status(status_msg, "Natija tekshirilmoqda...")
+    uz_translate.save_series()
     fitted, size_note = await asyncio.to_thread(pdf_utils.fit_size, out_pages)
     result_pdf = await asyncio.to_thread(pdf_utils.build_pdf, fitted)
     _archive(job, "natija.pdf", result_pdf)
@@ -1345,6 +1352,16 @@ async def _process_pdf(update: Update | None, context: ContextTypes.DEFAULT_TYPE
                f"vaqt: {elapsed // 60}:{elapsed % 60:02d}.")
     if failed:
         caption += f"\nTarjima qilinmagan sahifalar (aslicha qoldi): {', '.join(map(str, failed))}"
+    # Ochiq hisobot: nimaga ishonish mumkin, nimani ko'rib chiqish kerak
+    st = uz_translate.STATS
+    if st["google"] and (st["ai"] + st["google"]):
+        share = 100 * st["google"] // (st["ai"] + st["google"])
+        if share >= 10:
+            caption += (f"\n\u26a0\ufe0f Matnning {share}% i AI'siz (Google) tarjima qilindi - "
+                        "AI limiti tugagan yoki band bo'lgan.")
+    if report.get("tiny"):
+        caption += (f"\n\u26a0\ufe0f {report['tiny']} ta joyda matn pufakchaga sig'masdan juda "
+                    "mayda chiqdi - o'sha sahifalarni tekshirib ko'ring.")
     if budget["vlm"] <= 0 and VLM_BUDGET_PER_PDF:
         caption += "\nBa'zi qiyin joylar tezlik uchun o'tkazib yuborilgan bo'lishi mumkin."
 

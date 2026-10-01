@@ -675,6 +675,17 @@ def _line_height(font: ImageFont.FreeTypeFont) -> int:
     return h
 
 
+def _min_readable() -> int:
+    """Sahifa eniga nisbatan o'qilarli eng kichik shrift (1100 px sahifada ~12 px)."""
+    return max(10, int(getattr(_style, "page_w", 1100) * 0.011))
+
+
+def _note_tiny(size: int) -> None:
+    rep_ = getattr(_style, "report", None)
+    if rep_ is not None and size < _min_readable():
+        rep_["tiny"] = rep_.get("tiny", 0) + 1
+
+
 def _fit_text(draw: ImageDraw.ImageDraw, text: str, box_w: int, box_h: int,
               max_size: int | None = None) -> tuple[ImageFont.FreeTypeFont, list[str]]:
     """Qutiga sig'adigan eng katta shriftni tanlaydi.
@@ -691,8 +702,12 @@ def _fit_text(draw: ImageDraw.ImageDraw, text: str, box_w: int, box_h: int,
         lines = _wrap(draw, text, font, box_w)
         widest = max(draw.textlength(ln, font=font) for ln in lines)
         if widest <= box_w and _line_height(font) * len(lines) <= box_h:
+            _note_tiny(size)
             return font, lines
         size -= 1
+    # Sig'magan holat: matn kesilmaydi va toshmaydi - eng kichik shriftda yoziladi, lekin
+    # hisobotda "o'qish qiyin" deb belgilanadi (foydalanuvchi ko'rib, sahifani qayta yuborishi mumkin).
+    _note_tiny(9)
     font = _load_font(9)
     return font, _wrap(draw, text, font, box_w)
 
@@ -834,6 +849,7 @@ def _draw_in_shape(draw, shape, text_box, text: str, color, max_size: int | None
         got = _layout_in_shape(draw, text, mask, cx, cy, size)
         if not got:
             continue
+        _note_tiny(size)
         font, lines, spans, top, lh = got
         for i, (line, (a, b)) in enumerate(zip(lines, spans)):
             w = draw.textlength(line, font=font)
@@ -1236,8 +1252,11 @@ def _draw_tilted(out: Image.Image, job, angle: float) -> None:
     out.paste(rot, (rx1, ry1), rot)
 
 
-def render_translation(image_bytes: bytes, translations: list[dict], quality: int = 95) -> bytes:
+def render_translation(image_bytes: bytes, translations: list[dict], quality: int = 95,
+                       report: dict | None = None) -> bytes:
     image = load_image(image_bytes)
+    _style.page_w = image.width
+    _style.report = report
     arr = np.array(image)
     orig = arr.copy() if RENDER_V2 else None
     W, H = image.width, image.height

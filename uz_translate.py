@@ -525,9 +525,51 @@ _last_call = {"t": 0.0}
 NEW_CHAPTER_GAP = 600         # shuncha soniya tarjima bo'lmasa - yangi bob (kontekst tozalanadi)
 
 
+# Seriya lug'ati (2026-10-01): ismlar faqat bir bob ichida emas, SERIYA bo'yicha eslab qolinadi
+# (admins.json "glossary"), shuning uchun 35-bobdagi "Lim Duvon" 36-bobda ham o'sha bo'ladi.
+_series = {"key": ""}
+GLOSSARY_MAX = 300
+
+
+def _slug(text: str) -> str:
+    """Fayl nomi yoki sarlavhadan seriya kaliti: raqam, qavs va kengaytma tashlanadi."""
+    t = re.sub(r"\.[A-Za-z0-9]{2,4}$", "", text or "")
+    t = re.sub(r"[\[(][^\])]*[\])]", " ", t)
+    t = re.sub(r"\b(ch|chapter|bob|ep|episode|vol)\b", " ", t, flags=re.IGNORECASE)
+    t = re.sub(r"[^A-Za-z\u00c0-\u024f]+", " ", t)
+    return " ".join(t.split()).lower()[:60]
+
+
+def set_series(user_id: int | str, title: str) -> None:
+    """Bob boshlanishida chaqiriladi: shu seriyaning saqlangan ismlar lug'atini yuklaydi."""
+    key = f"{user_id}:{_slug(title)}"
+    _ctx.clear()
+    if key == _series["key"]:
+        return                                   # o'sha seriya - lug'at joyida qoladi
+    _series["key"] = key
+    _names.clear()
+    try:
+        import admins
+        _names.update(admins.get_glossary(key))
+    except Exception:
+        logger.info("Seriya lug'ati yuklanmadi")
+
+
+def save_series() -> None:
+    """Bob tugagach: shu bobda aniqlangan ismlarni seriya lug'atiga qo'shadi."""
+    if not _series["key"] or not _names:
+        return
+    try:
+        import admins
+        admins.put_glossary(_series["key"], dict(list(_names.items())[-GLOSSARY_MAX:]))
+    except Exception:
+        logger.info("Seriya lug'ati saqlanmadi")
+
+
 def new_chapter() -> None:
     _ctx.clear()
-    _names.clear()
+    if not _series["key"]:                       # seriya noma'lum - eski tartib
+        _names.clear()
 
 
 def _parse_list(text: str) -> list | None:
@@ -680,6 +722,21 @@ def _sane(draft: str, polished: str) -> bool:
             and not _CYRILLIC.search(polished))
 
 
+_DIGITS = re.compile(r"\d+")
+
+
+def _keeps_numbers(english: str, polished: str) -> bool:
+    """Manbada raqam bor-u, tarjimada umuman yo'q bo'lsa - AI qatori rad etiladi.
+
+    Manhwada raqam ko'p ma'noli ("1-bosqich", "5 oltin", "12 ta"). AI ularni tushirib
+    qoldirsa yoki o'zgartirsa, ma'no buziladi - bunda Google qoralamasi ishonchliroq.
+    """
+    src = _DIGITS.findall(english or "")
+    if not src:
+        return True
+    return bool(_DIGITS.findall(polished or ""))
+
+
 def _fix_ai(text: str) -> str:
     """Gemini'ning takrorlanuvchi mayda xatolari (40 gaplik sinovda ko'rilgan)."""
     text = re.sub(r"(\w)my([?!.,…]|$)", r"\1mi\2", text)       # "otliqlarmy?!" -> "otliqlarmi?!"
@@ -702,12 +759,23 @@ def _gemini_ready() -> bool:
                for spec in GEMINI_MODELS for k in range(len(GEMINI_KEYS)))
 
 
+STATS = {"ai": 0, "google": 0}      # oxirgi bobdagi qatorlar (hisobot uchun)
+
+
+def reset_stats() -> None:
+    STATS["ai"] = STATS["google"] = 0
+
+
 def _polish_part(english: list[str], drafts: list[str]) -> list[str]:
     part = _gemini(english, drafts)
     if part is None and len(english) > 20 and _gemini_ready():
         half = len(english) // 2
         return _polish_part(english[:half], drafts[:half]) + _polish_part(english[half:], drafts[half:])
-    return part if part is not None else drafts         # shu bo'lak Google'da qoladi
+    if part is None:
+        STATS["google"] += len(drafts)                  # shu bo'lak Google'da qoladi
+        return drafts
+    STATS["ai"] += len(part)
+    return part
 
 
 def _llm_polish(english: list[str], drafts: list[str]) -> list[str] | None:
@@ -719,7 +787,8 @@ def _llm_polish(english: list[str], drafts: list[str]) -> list[str] | None:
             n = -(-len(english) // parts)
         for i in range(0, len(english), n):
             out += _polish_part(english[i:i + n], drafts[i:i + n])
-        return [_fix_ai(p) if p != d and _sane(d, p) else d for p, d in zip(out, drafts)]
+        return [_fix_ai(p) if p != d and _sane(d, p) and _keeps_numbers(e, p) else d
+                for p, d, e in zip(out, drafts, english)]
     body = json.dumps({"lines": english, "drafts": drafts}).encode("utf-8")
     req = urllib.request.Request(LLM_URL, data=body, headers={
         "x-key": os.getenv("GATE_KEY", ""), "content-type": "application/json",
