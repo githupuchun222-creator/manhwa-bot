@@ -848,6 +848,46 @@ def lum_of(px: np.ndarray) -> np.ndarray:
     return px.astype(np.float32) @ np.array([0.299, 0.587, 0.114], np.float32)
 
 
+def _flat_area(arr: np.ndarray, box: tuple[int, int, int, int],
+               flat: tuple[int, int, int]) -> tuple[int, int, int, int] | None:
+    """Matn qutisi joylashgan TEKIS (pufakcha ichi) hududning qutisi.
+
+    Kontur uzuq pufakchada matn shu hududdan chiqib ketardi (foydalanuvchi skrinshoti,
+    2026-10-01: tarjima pufakchaning tepasidan va chapidan oshib ketgan). Endi yozish qutisi
+    shu hudud bilan cheklanadi.
+    """
+    try:
+        import cv2
+    except ImportError:
+        return None
+    H, W = arr.shape[:2]
+    x1, y1, x2, y2 = box
+    bw, bh = x2 - x1, y2 - y1
+    m = max(60, int(max(bw, bh) * 1.2))
+    X1, Y1 = max(0, x1 - m), max(0, y1 - m)
+    X2, Y2 = min(W, x2 + m), min(H, y2 + m)
+    sub = arr[Y1:Y2, X1:X2]
+    if sub.size == 0:
+        return None
+    close = (np.abs(sub.astype(np.int16) - np.array(flat, np.int16)).max(axis=2) < 40)
+    # harflar ham "tekis emas" - ularni yopib, hudud uzilmasin
+    close = cv2.morphologyEx(close.astype(np.uint8), cv2.MORPH_CLOSE,
+                             np.ones((9, 9), np.uint8)).astype(bool)
+    n, lab = cv2.connectedComponents(close.astype(np.uint8), 8)
+    cy, cx = (y1 + y2) // 2 - Y1, (x1 + x2) // 2 - X1
+    if not (0 <= cy < lab.shape[0] and 0 <= cx < lab.shape[1]):
+        return None
+    k = int(lab[cy, cx])
+    if k == 0:
+        return None
+    ys, xs = np.nonzero(lab == k)
+    if len(ys) < bw * bh * 0.5:
+        return None
+    pad = 4
+    return (X1 + int(xs.min()) + pad, Y1 + int(ys.min()) + pad,
+            X1 + int(xs.max()) - pad, Y1 + int(ys.max()) - pad)
+
+
 def _flat_bg(arr: np.ndarray, box: tuple[int, int, int, int]) -> tuple[int, int, int] | None:
     """Quti atrofidagi halqa bir xil (tekis) rangmi - bo'lsa o'sha rang, aks holda None."""
     H, W = arr.shape[:2]
@@ -968,14 +1008,14 @@ def _inpaint_text(arr: np.ndarray, box: tuple[int, int, int, int],
         base = float(np.percentile(ring_l, 40))
         # nur faqat HARFLAR yaqinida olinadi - oyna ramkasi va uning yorug' chetlari tegilmaydi
         import cv2
-        r = max(3, pad // 2)
+        r = max(6, int(pad * 1.2))
         near = cv2.dilate((mask > 0).astype(np.uint8), np.ones((2 * r + 1, 2 * r + 1), np.uint8)) > 0
-        mask = np.maximum(mask, (((lum > base + 28) & near).astype(np.uint8) * 255))
+        mask = np.maximum(mask, (((lum > base + 20) & near).astype(np.uint8) * 255))
     try:
         import cv2
 
         if glow and FONT_STYLES:
-            mask = cv2.dilate(mask, np.ones((3, 3), np.uint8), iterations=3)
+            mask = cv2.dilate(mask, np.ones((3, 3), np.uint8), iterations=4)
             _fill_masked(arr, (x1, y1, x2, y2), mask > 0)
             return (x1 + pad - 6, y1 + pad - 6, x2 - pad + 6, y2 - pad + 6)
 
@@ -1309,7 +1349,14 @@ def render_translation(image_bytes: bytes, translations: list[dict], quality: in
             area = _inpaint_text(arr, box)
             if flat is not None:
                 # tekis fondagi yozuv (kontur uzuq pufakcha) - oddiy pufakcha matni kabi:
-                # komiks shrifti, konturisiz, fon rangiga mos rang
+                # komiks shrifti, konturisiz, fon rangiga mos rang. Yozish qutisi tekis hudud
+                # bilan cheklanadi - matn pufakchadan chiqmasin.
+                lim = _flat_area(arr, box, flat)
+                if lim is not None and lim[2] - lim[0] > 20 and lim[3] - lim[1] > 20:
+                    area = (max(area[0], lim[0]), max(area[1], lim[1]),
+                            min(area[2], lim[2]), min(area[3], lim[3]))
+                    if area[2] - area[0] < 20 or area[3] - area[1] < 20:
+                        area = lim
                 jobs.append(("flat", area, flat, uzbek_text, max_size, angle))
             else:
                 jobs.append(("art", area, None, uzbek_text, max_size, angle))

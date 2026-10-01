@@ -247,3 +247,73 @@ def add_daily(user_id: int, delta: int = 1) -> int:
 
 def daily_blocked(user_id: int) -> bool:
     return bool(DAILY_LIMIT) and not is_admin(user_id) and daily_used(user_id) >= DAILY_LIMIT
+
+
+# BOB PAKETLARI (2026-10-01, @Manhwatarjima1_bot - foydalanuvchi: "bu botda oylik obuna emas
+# tarjimasiga summa bo'lsin: 100 ta bob tarjimaga 30 ming, 200 taga 50 ming, 300 taga 80 ming").
+# PACKS="100:30000,200:50000,300:80000" bo'lsa - vaqtli obuna o'rniga BALANS sotiladi:
+# "bal": {id: qolgan bob soni}. To'lov qo'lda (admin paketni beradi), har tarjima qilingan bob
+# balansdan bitta yechadi; ish bajarilmasa qaytariladi (bot._refund). PACKS bo'sh - eski oylik obuna.
+def _parse_packs(raw: str) -> list[tuple[int, int]]:
+    packs = []
+    for part in raw.replace(";", ",").split(","):
+        n, _, price = part.strip().partition(":")
+        if not n.strip():
+            continue
+        try:
+            packs.append((int(n.strip()), int(price.strip().replace(" ", "") or 0)))
+        except ValueError:
+            continue
+    return sorted(packs)
+
+
+PACKS = _parse_packs(os.getenv("PACKS", ""))
+PACKS_ON = bool(PACKS)
+
+
+def money(summa: int) -> str:
+    return f"{summa:,}".replace(",", " ") + " so'm"
+
+
+def pack_lines(bullet: str = "• ") -> str:
+    return chr(10).join(f"{bullet}<b>{n} ta bob</b> - {money(p)}" for n, p in PACKS)
+
+
+def balance(user_id: int) -> int:
+    return int(_load().get("bal", {}).get(str(user_id), 0))
+
+
+def add_balance(user_id: int, n: int) -> int:
+    """Balansga bob qo'shadi (manfiy - yechadi). Qaytaradi: qolgan bob soni."""
+    data = _load()
+    bal = data.setdefault("bal", {})
+    left = max(0, int(bal.get(str(user_id), 0)) + n)
+    if left:
+        bal[str(user_id)] = left
+    else:
+        bal.pop(str(user_id), None)
+    _save(data)
+    return left
+
+
+def clear_balance(user_id: int) -> bool:
+    data = _load()
+    bal = data.setdefault("bal", {})
+    if str(user_id) not in bal:
+        return False
+    del bal[str(user_id)]
+    _save(data)
+    return True
+
+
+def list_balances() -> list[tuple[int, int]]:
+    return sorted(((int(k), int(v)) for k, v in _load().get("bal", {}).items()), key=lambda x: -x[1])
+
+
+def free_left(user_id: int) -> int:
+    return max(0, FREE_CHAPTERS - used_chapters(user_id))
+
+
+def is_paying(user_id: int) -> bool:
+    """Pullik foydalanuvchi: oylik obunasi faol yoki paket balansi bor."""
+    return is_paid(user_id) or (PACKS_ON and balance(user_id) > 0)

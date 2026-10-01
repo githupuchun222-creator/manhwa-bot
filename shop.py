@@ -4,7 +4,8 @@ Foydalanuvchi "dizayn shu promptdagidek bo'lsin" dedi: asosiy menyu (📖 Tarjim
 qilish, 🎁 Bepul bob, 📂 Buyurtmalarim, 💰 Narxlar va shartlar, ✉️ Admin bilan bog'lanish,
 ❓ Yordam), bosqichma-bosqich buyurtma (nom -> bob -> til -> sahifalar -> izoh -> tasdiq),
 buyurtma raqamlari, /admin paneli. Biznes tartibi O'ZGARMADI (foydalanuvchi tanlovi):
-1 bepul bob + oylik obuna, tarjima AVTOMATIK (bot.py navbati va konveyeri).
+1 bepul bob + to'lov, tarjima AVTOMATIK (bot.py navbati va konveyeri). PACKS bo'lsa (2026-10-01,
+@Manhwatarjima1_bot) oylik obuna emas - boblar paketi sotiladi (admins.PACKS, balans).
 
 Ma'lumotlar admins.json da (Cloudflare darvozasiga ham saqlanadi): "orders", "seq", "drafts",
 "log". Bepul bob holati: Mavjud -> Band (navbatdagi bepul buyurtma) -> Ishlatilgan (yetkazilganda);
@@ -90,9 +91,11 @@ def user_orders(uid: int) -> list[dict]:
 
 
 def trial_state(uid: int) -> str:
-    """'mavjud' | 'band' | 'ishlatilgan' | 'cheksiz' (admin/obunachi)."""
+    """'mavjud' | 'band' | 'ishlatilgan' | 'paket' (balansi bor) | 'cheksiz' (admin/obunachi)."""
     if admins.is_admin(uid) or admins.is_paid(uid):
         return "cheksiz"
+    if admins.PACKS_ON and admins.free_left(uid) <= 0 and admins.balance(uid) > 0:
+        return "paket"
     if any(o["kind"] == "bepul" and o["status"] in (ST_QUEUED, ST_WORK) for o in user_orders(uid)):
         return "band"
     if admins.used_chapters(uid) >= admins.FREE_CHAPTERS:
@@ -102,6 +105,8 @@ def trial_state(uid: int) -> str:
 
 def _trial_line(uid: int) -> str:
     st = trial_state(uid)
+    if st == "paket":
+        return f"💰 Balansingiz: <b>{admins.balance(uid)} ta bob</b> (muddat cheklovi yo‘q)."
     if st == "cheksiz":
         until = admins.sub_until(uid)
         return (f"✅ Oylik obuna faol: <b>{_date(until)}</b> gacha." if until > time.time()
@@ -138,9 +143,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id
     text = ("👋 <b>Assalomu alaykum!</b>\n\n"
             "Manhwa boblarini tarjima qildiring. Birinchi buyurtmangizdagi <b>1 bob bepul</b>. "
-            "Keyingi boblar uchun oylik obuna olishingiz yoki admin bilan bog‘lanib, "
-            "narx va muddatni kelishishingiz mumkin.\n\n"
-            "Tarjimani bot o‘zi bajaradi: matnni o‘qiydi, AI bilan o‘zbekchaga o‘giradi va "
+            + ("Keyingi boblar uchun <b>boblar paketi</b> olasiz - oylik obuna yo‘q, to‘lov "
+               "faqat tarjima qilinadigan boblar soniga.\n\n" if admins.PACKS_ON else
+               "Keyingi boblar uchun oylik obuna olishingiz yoki admin bilan bog‘lanib, "
+               "narx va muddatni kelishishingiz mumkin.\n\n")
+            + "Tarjimani bot o‘zi bajaradi: matnni o‘qiydi, AI bilan o‘zbekchaga o‘giradi va "
             "rasmga yozib, <b>PDF</b> qilib qaytaradi (odatda bir bob bir necha daqiqada).\n\n"
             + _trial_line(uid) + "\n\nPastdagi menyudan tanlang 👇")
     await update.effective_message.reply_text(text, parse_mode="HTML", reply_markup=main_keyboard(uid))
@@ -164,7 +171,8 @@ def _limits_text(uid: int | None = None) -> str:
     big = B.bigfile.MAX_BIG_BYTES // 2**20 if B.bigfile.enabled() else 20
     trial = B.TRIAL_MAX_BYTES // 2**20
     if uid is not None and trial < big and trial_state(uid) != "cheksiz":
-        size_line = f"• Bitta fayl <b>{trial} MB</b> gacha (bepul sinov; obunachilarga {big} MB)\n"
+        who = "paket olganlarga" if admins.PACKS_ON else "obunachilarga"
+        size_line = f"• Bitta fayl <b>{trial} MB</b> gacha (bepul sinov; {who} {big} MB)\n"
     else:
         size_line = f"• Bitta fayl <b>{big} MB</b> gacha" + (f" (bepul sinovda {trial} MB)" if trial < big and uid is None else "") + "\n"
     return (f"• Bir buyurtmada eng ko‘pi <b>{B.MAX_PDF_PAGES}</b> sahifa\n"
@@ -181,25 +189,39 @@ async def show_free(update: Update, context, edit=False) -> None:
             "(boshqa manhwa yuborish uni yangilamaydi).\n\n" + _trial_line(uid) + "\n\n"
             "<b>Cheklovlar:</b>\n" + _limits_text(uid))
     rows = []
-    if st in ("mavjud", "cheksiz"):
+    if st in ("mavjud", "cheksiz", "paket"):
         rows.append([_ib(BTN_ORDER, "sh:order")])
     elif st == "ishlatilgan":
-        text += ("\n\nBepul bobingizdan foydalandingiz. Keyingi boblarning narxi va tayyor bo‘lish "
+        text += ("\n\nBepul bobingizdan foydalandingiz. Davom etish uchun boblar paketini olasiz:\n"
+                 + admins.pack_lines() if admins.PACKS_ON else
+                 "\n\nBepul bobingizdan foydalandingiz. Keyingi boblarning narxi va tayyor bo‘lish "
                  "muddatini admin bilan kelishishingiz yoki oylik obuna olishingiz mumkin.")
-        rows.append([_ib("💳 Oylik obuna", "sh:price")] + _contact_button())
+        rows.append([_ib("💰 Paketlar" if admins.PACKS_ON else "💳 Oylik obuna",
+                         "sh:price")] + _contact_button())
     await _reply(update, text, InlineKeyboardMarkup(rows) if rows else None, edit)
 
 
 async def show_price(update: Update, context, edit=False) -> None:
     uid = update.effective_user.id
     old = f"<s>{B.SUB_OLD_PRICE}</s> " if B.SUB_OLD_PRICE else ""
+    if admins.PACKS_ON:                                    # oylik obuna emas - boblar paketi
+        pay_block = ("💰 <b>Boblar paketi</b> (oylik obuna yo‘q - to‘lov tarjima "
+                     "qilinadigan boblar soniga):\n" + admins.pack_lines() + "\n"
+                     "• Paket muddatsiz: boblar tugaguncha ishlatasiz\n"
+                     "• Har tarjima qilingan bob balansdan bitta yechiladi\n"
+                     "• Ish bajarilmasa (xato/bekor) - bob qaytariladi\n\n"
+                     "<b>To‘lov:</b> admin bilan yozishmada kelishiladi. To‘lovdan keyin admin "
+                     "paketni qo‘lda qo‘shadi (avtomatik to‘lov yo‘q).\n\n")
+    else:
+        pay_block = (f"💳 <b>Oylik obuna:</b> 🔥 chegirmada {old}<b>{B.SUB_PRICE}</b> / "
+                     f"{admins.SUB_DAYS} kun - shu muddatda cheklovsiz tarjima\n"
+                     "📚 <b>Alohida boblar / katta hajm:</b> narx bob uzunligi va ishga qarab - "
+                     "admin bilan kelishiladi\n\n"
+                     "<b>To‘lov:</b> admin bilan yozishmada kelishiladi. To‘lovdan keyin admin "
+                     "obunangizni qo‘lda yoqadi (avtomatik to‘lov yo‘q).\n\n")
     text = ("💰 <b>Narxlar va shartlar</b>\n\n"
             f"🎁 <b>Bepul:</b> {admins.FREE_CHAPTERS} ta bob (bir martalik)\n"
-            f"💳 <b>Oylik obuna:</b> 🔥 chegirmada {old}<b>{B.SUB_PRICE}</b> / {admins.SUB_DAYS} kun - "
-            "shu muddatda cheklovsiz tarjima\n"
-            "📚 <b>Alohida boblar / katta hajm:</b> narx bob uzunligi va ishga qarab - admin bilan kelishiladi\n\n"
-            "<b>To‘lov:</b> admin bilan yozishmada kelishiladi. To‘lovdan keyin admin obunangizni "
-            "qo‘lda yoqadi (avtomatik to‘lov yo‘q).\n\n"
+            + pay_block +
             "<b>Cheklovlar:</b>\n" + _limits_text(uid) +
             (f"\n• Bir kunda eng ko‘pi <b>{admins.DAILY_LIMIT}</b> ta bob (bugun: {admins.daily_used(uid)})"
              if admins.DAILY_LIMIT and not admins.is_admin(uid) else "") + "\n\n" + _trial_line(uid) +
@@ -248,7 +270,8 @@ async def show_mine(update: Update, context, edit=False) -> None:
         return
     lines, rows = [], []
     for o in orders:
-        kind = {"bepul": "🎁 bepul", "obuna": "💳 obuna", "admin": "👑 admin"}.get(o["kind"], o["kind"])
+        kind = {"bepul": "🎁 bepul", "obuna": "💳 obuna", "paket": "💰 paket",
+                "admin": "👑 admin"}.get(o["kind"], o["kind"])
         lines.append(f"{ST_ICON.get(o['status'], '•')} <b>{o['ref']}</b> - {html.escape(o['title'])}, "
                      f"{html.escape(o['chapter'])}\n    {_date(o['created'])} · "
                      f"{LANG_NAME.get(o['src'], o['src'])} → {LANG_NAME.get(o['tgt'], o['tgt'])} · "
@@ -586,7 +609,14 @@ async def _confirm(update: Update, context, draft: dict, nonce: str) -> None:
                          [_contact_button() or [_ib("💰 Narxlar", "sh:price")],
                           [_ib("📝 Buyurtma tafsilotlarini yuborish", "sh:inq")]]), edit=True)
         return
-    kind = "admin" if admins.is_admin(uid) else ("obuna" if admins.is_paid(uid) else "bepul")
+    if admins.is_admin(uid):
+        kind = "admin"
+    elif st == "paket":
+        kind = "paket"
+    elif admins.is_paid(uid):
+        kind = "obuna"
+    else:
+        kind = "bepul"
     data["seq"] = int(data.get("seq", 0)) + 1
     ref = f"M-{data['seq']:04d}"
     order = {"ref": ref, "uid": uid, "who": update.effective_user.full_name or str(uid),
@@ -600,19 +630,23 @@ async def _confirm(update: Update, context, draft: dict, nonce: str) -> None:
         for old in sorted(orders, key=lambda r: orders[r]["created"])[:len(orders) - 1000]:
             orders.pop(old, None)
     _save(data)
-    charged = False
+    charged = bal = False
     if kind == "bepul":
         admins.add_used(uid)                               # Band (yetib bormasa qaytariladi)
         charged = True
+    elif kind == "paket":
+        admins.add_balance(uid, -1)                        # paket balansidan bitta bob
+        bal = True
     daily = bool(admins.DAILY_LIMIT) and not admins.is_admin(uid)
     if daily:
         admins.add_daily(uid)
     await _reply(update, _summary(uid, draft).replace("🧾 <b>Buyurtmani tekshiring</b>",
                                                       f"✅ <b>Buyurtma qabul qilindi: {ref}</b>"), None, edit=True)
-    await enqueue_order(context, order, charged, daily)
+    await enqueue_order(context, order, charged, daily, bal)
 
 
-async def enqueue_order(context, order: dict, charged: bool, daily: bool = False) -> None:
+async def enqueue_order(context, order: dict, charged: bool, daily: bool = False,
+                        bal: bool = False) -> None:
     ahead = len(B._waiting) + len(B._active)
     status = await context.bot.send_message(
         order["uid"], f"🧾 {order['ref']}: " + ("tarjima boshlanmoqda..." if ahead < B.PARALLEL_JOBS else
@@ -620,7 +654,8 @@ async def enqueue_order(context, order: dict, charged: bool, daily: bool = False
     B._job_counter["n"] += 1
     job = {"update": None, "context": context, "user": order["uid"], "id": B._job_counter["n"],
            "name": f"{order['title']} {order['chapter']} ({order['ref']})", "who": order["who"],
-           "cancelled": False, "free": charged, "daily": daily, "status": status, "order": order["ref"]}
+           "cancelled": False, "free": charged, "bal": bal, "daily": daily, "status": status,
+           "order": order["ref"]}
     B._waiting.append(job)
     await B._queue.put(job)
 
@@ -733,17 +768,21 @@ async def admin_panel(update: Update, context, edit=False) -> None:
     cnt = {s: sum(1 for o in orders if o["status"] == s) for s in ST_ICON}
     today = time.time() - 86400
     subs = sum(1 for _, t in admins.list_paid() if t > time.time())
+    bals = admins.list_balances()
     text = ("⚙️ <b>Admin panel</b>\n\n"
             f"🆕 Oxirgi 24 soatda buyurtma: <b>{sum(1 for o in orders if o['created'] > today)}</b>\n"
             f"⏳ Kutilmoqda: <b>{cnt[ST_QUEUED]}</b> · ⚙️ Ishlanmoqda: <b>{cnt[ST_WORK]}</b>\n"
             f"✅ Yetkazilgan: <b>{cnt[ST_DONE]}</b> · ⚠️ Xato: <b>{cnt[ST_FAIL]}</b> · "
             f"❌ Bekor: <b>{cnt[ST_CANCEL]}</b>\n"
             f"🎁 Bepul bob ishlatganlar: <b>{len(data.get('used', {}))}</b>\n"
-            f"💳 Faol obunachilar: <b>{subs}</b>\n"
+            + (f"💰 Paket balansi borlar: <b>{len(bals)}</b> "
+               f"(jami {sum(n for _, n in bals)} ta bob)\n" if admins.PACKS_ON else
+               f"💳 Faol obunachilar: <b>{subs}</b>\n") +
             f"👤 Tanish foydalanuvchilar: <b>{len(data.get('users', {}))}</b>\n"
             f"📝 So‘rovlar: <b>{len(data.get('inquiries', {}))}</b>")
     rows = [[_ib("📋 Buyurtmalar", "sh:aorders"), _ib("👤 Foydalanuvchi", "sh:auser")],
-            [_ib("📅 Bir oylik", "m:do:paid"), _ib("👥 Adminlar", "m:do:admins")],
+            [_ib("💰 Paketlar" if admins.PACKS_ON else "📅 Bir oylik", "m:do:paid"),
+             _ib("👥 Adminlar", "m:do:admins")],
             [_ib("📝 Qoidalar", "m:qoidalar"), _ib("📜 Jurnal", "sh:alog")],
             [_ib("🔄 Yangilash", "sh:apanel")]]
     await _reply(update, text, InlineKeyboardMarkup(rows), edit)
@@ -805,13 +844,17 @@ async def admin_button(update: Update, context, parts: list[str]) -> None:
     elif act == "aretry":
         o = get_order(parts[2])
         if o:
-            charged = False
-            if o["kind"] == "bepul" and o["status"] in (ST_FAIL, ST_CANCEL):
-                admins.add_used(o["uid"])
-                charged = True
+            charged = bal = False
+            if o["status"] in (ST_FAIL, ST_CANCEL):
+                if o["kind"] == "bepul":
+                    admins.add_used(o["uid"])
+                    charged = True
+                elif o["kind"] == "paket":
+                    admins.add_balance(o["uid"], -1)
+                    bal = True
             _set_order(o["ref"], status=ST_QUEUED)
             _log(uid, "qayta ishlashga yubordi", o["ref"])
-            await enqueue_order(context, get_order(o["ref"]), charged)
+            await enqueue_order(context, get_order(o["ref"]), charged, False, bal)
             await update.effective_message.reply_text(f"🔁 {o['ref']} qayta ishga tushirildi.")
     elif act == "acancel":
         _log(uid, "bekor qildi", parts[2])
@@ -846,12 +889,19 @@ async def _admin_text(update: Update, context, text: str) -> bool:
             return True
         orders = user_orders(target)[:8]
         until = admins.sub_until(target)
+        pay_line = (f"Paket balansi: {admins.balance(target)} ta bob" if admins.PACKS_ON else
+                    f"Obuna: {_date(until) + ' gacha' if until else 'yo‘q'}")
         info = (f"👤 <b>{target}</b>\n{_trial_line(target)}\n"
-                f"Obuna: {_date(until) + ' gacha' if until else 'yo‘q'}\n\n<b>Buyurtmalar:</b>\n" +
+                f"{pay_line}\n\n<b>Buyurtmalar:</b>\n" +
                 ("\n".join(f"{ST_ICON.get(o['status'], '')} {o['ref']} {html.escape(o['title'])} {html.escape(o['chapter'])}"
                            for o in orders) or "yo‘q"))
-        rows = [[_ib("🎁 Bepul bobni qaytarish", f"sh:arestore:{target}")],
-                [_ib("💳 +1 oy obuna", f"paid:{target}"), _ib("🗑 Obunani olish", f"unpaid:{target}")]]
+        rows = [[_ib("🎁 Bepul bobni qaytarish", f"sh:arestore:{target}")]]
+        if admins.PACKS_ON:
+            rows.append(B._pack_buttons(target))
+            rows.append([_ib("🗑 Balansni tozalash", f"unpaid:{target}")])
+        else:
+            rows.append([_ib("💳 +1 oy obuna", f"paid:{target}"),
+                         _ib("🗑 Obunani olish", f"unpaid:{target}")])
         await update.effective_message.reply_text(info, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(rows))
     elif kind == "restore":
         target = int(arg)

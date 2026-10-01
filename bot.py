@@ -60,7 +60,7 @@ TRIAL_MAX_BYTES = int(os.getenv("TRIAL_MAX_MB", "20")) * 1024 * 1024
 
 def max_upload_bytes(uid: int) -> int:
     big = bigfile.MAX_BIG_BYTES if bigfile.enabled() else MAX_DOWNLOAD_BYTES
-    if admins.FREE_CHAPTERS and not admins.is_admin(uid) and not admins.is_paid(uid):
+    if admins.FREE_CHAPTERS and not admins.is_admin(uid) and not admins.is_paying(uid):
         return min(big, TRIAL_MAX_BYTES)
     return big
 
@@ -70,7 +70,8 @@ def too_big_text(uid: int, size: int) -> str:
     text = f"⚠️ Bu fayl juda katta ({size / 2**20:.0f} MB, sizga chegara {limit // 2**20} MB)."
     if limit < (bigfile.MAX_BIG_BYTES if bigfile.enabled() else MAX_DOWNLOAD_BYTES):
         text += (f"\nBepul sinov uchun fayl {limit // 2**20} MB gacha bo'lishi kerak - bobni bo'lib yoki "
-                 "siqib yuboring. Obunachilar katta fayllarni ham yubora oladi (💰 Narxlar va shartlar).")
+                 "siqib yuboring. " + ("Paket olganlar" if admins.PACKS_ON else "Obunachilar")
+                 + " katta fayllarni ham yubora oladi (💰 Narxlar va shartlar).")
     else:
         text += "\nIltimos, bobni bo'lib (yoki siqib) qayta yuboring."
     return text
@@ -185,7 +186,7 @@ def _screen(name: str, user_id: int) -> tuple[str, InlineKeyboardMarkup]:
             "yoki u /start bossin - sizga tugmali so'rov keladi\n"
             "• Ro'yxatda har admin yonida o'chirish tugmasi bor"),
             InlineKeyboardMarkup([[_btn("👥 Adminlar ro'yxati", "m:do:admins")]]
-                                 + ([[_btn("📅 Bir oylik", "m:do:paid")]] if admins.FREE_CHAPTERS else [])
+                                 + ([[_btn(_pay_btn(), "m:do:paid")]] if admins.FREE_CHAPTERS or admins.PACKS_ON else [])
                                  + [back]))
     if name == "yordam":
         text = (
@@ -207,13 +208,26 @@ def _screen(name: str, user_id: int) -> tuple[str, InlineKeyboardMarkup]:
     else:
         rows = [[_btn("🌐 Tarjima", "m:tarjima"), _btn("⚙️ Holat", "m:holat")],
                 [_btn("ℹ️ Yordam", "m:yordam")]]
-        if admins.FREE_CHAPTERS:
+        if admins.PACKS_ON:
+            rows.insert(0, [_btn(f"💰 Boblar paketi - {admins.PACKS[0][0]} bob "
+                                 f"{admins.money(admins.PACKS[0][1])}", "m:obuna")])
+        elif admins.FREE_CHAPTERS:
             rows.insert(0, [_btn(f"💳 Oylik obuna - chegirmada {SUB_PRICE} 🔥", "m:obuna")])
     if admins.is_superadmin(user_id):
         rows.append([_btn("👑 Adminlar", "m:admins")]
-                    + ([_btn("📅 Bir oylik", "m:do:paid")] if admins.FREE_CHAPTERS else []))
+                    + ([_btn(_pay_btn(), "m:do:paid")] if admins.FREE_CHAPTERS or admins.PACKS_ON else []))
     status = ""
-    if admins.FREE_CHAPTERS and not admins.is_admin(user_id):
+    if admins.PACKS_ON and not admins.is_admin(user_id):
+        bal = admins.balance(user_id)
+        left = admins.free_left(user_id)
+        if bal:
+            status = f"\n\n💰 Balansingiz: <b>{bal} ta bob</b> - PDF yoki bob rasmlarini yuboring."
+        elif left:
+            status = (f"\n\n🎁 Sizda <b>{left} ta bepul bob</b> bor - PDF yoki bir bob "
+                      "rasmlarini (albom qilib) yuboring.")
+        else:
+            status = "\n\n🎁 Bepul bobingizdan foydalandingiz. Davom etish uchun - 💰 Boblar paketi."
+    elif admins.FREE_CHAPTERS and not admins.is_admin(user_id):
         until = admins.sub_until(user_id)
         left = max(0, admins.FREE_CHAPTERS - admins.used_chapters(user_id))
         if until > time.time():
@@ -261,6 +275,8 @@ async def on_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
         context.user_data["await_sub"] = True
         await update.effective_message.reply_text(
+            "✍️ Paket beriladigan odamning @username'ini yoki ID raqamini yuboring - "
+            "keyin paketni tanlaysiz.\nBekor qilish: /start" if admins.PACKS_ON else
             "✍️ Obunachining @username'ini yoki ID raqamini yuboring - unga hozirdan boshlab "
             f"{admins.SUB_DAYS} kunlik obuna beriladi.\nBekor qilish: /start")
         return
@@ -663,19 +679,24 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     # Bepul cheklov: oddiy foydalanuvchiga FREE_CHAPTERS ta bob. Bitta bob = bitta PDF
     # yoki bitta albom (birga yuborilgan rasmlar, media_group_id bir xil) yoki bitta rasm.
-    charged = False
-    if admins.FREE_CHAPTERS and not admins.is_admin(user_id) and not admins.is_paid(user_id):
+    charged = bal_charged = False
+    if ((admins.FREE_CHAPTERS or admins.PACKS_ON) and not admins.is_admin(user_id)
+            and not admins.is_paid(user_id)):
         group = msg.media_group_id
         if not (group and _free_groups.get(user_id) == group):
-            if admins.used_chapters(user_id) >= admins.FREE_CHAPTERS:
+            if admins.free_left(user_id) <= 0 and admins.PACKS_ON and admins.balance(user_id) > 0:
+                admins.add_balance(user_id, -1)       # paket balansidan bitta bob
+                bal_charged = True
+            elif admins.free_left(user_id) <= 0:
                 text, markup = _sub_panel(user_id)
                 await msg.reply_text(text, reply_markup=markup, parse_mode="HTML")
                 await _ask_owner_to_pay(context, update.effective_user)
                 if daily:
                     admins.add_daily(user_id, -1)
                 return
-            admins.add_used(user_id)
-            charged = True
+            else:
+                admins.add_used(user_id)
+                charged = True
             if group:
                 _free_groups[user_id] = group
 
@@ -683,6 +704,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if mine >= MAX_QUEUE_PER_USER:
         if charged:
             admins.add_used(user_id, -1)
+        if bal_charged:
+            admins.add_balance(user_id, 1)
         if daily:
             admins.add_daily(user_id, -1)
         await msg.reply_text(f"Navbatda sizning {mine} ta ishingiz bor — avval ular tugasin.")
@@ -701,7 +724,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     fname = (msg.document.file_name if msg.document else None) or "rasm"
     job = {"update": update, "context": context, "user": user_id, "id": _job_counter["n"],
            "name": fname, "who": update.effective_user.full_name or str(user_id),
-           "cancelled": False, "free": charged, "daily": daily, "status": await msg.reply_text(text)}
+           "cancelled": False, "free": charged, "bal": bal_charged, "daily": daily,
+           "status": await msg.reply_text(text)}
     _waiting.append(job)
     await _queue.put(job)
     logger.info("Navbatga qo'yildi: user=%s, oldinda=%d", user_id, ahead)
@@ -715,6 +739,11 @@ SUB_PRICE = os.getenv("SUB_PRICE", "50 000 so'm")
 SUB_OLD_PRICE = os.getenv("SUB_OLD_PRICE", "")      # bo'lsa - ustidan chizilgan eski narx
 
 
+def _pay_btn() -> str:
+    """Admin tugmasi: paket rejimida (PACKS) - paketlar, aks holda oylik obuna."""
+    return "💰 Paketlar" if admins.PACKS_ON else "📅 Bir oylik"
+
+
 def _owner_name() -> str:
     return os.getenv("OWNER_USERNAME", "").lstrip("@")
 
@@ -724,8 +753,34 @@ def _date(ts: float) -> str:
     return time.strftime("%d.%m.%Y %H:%M", time.gmtime(ts + 5 * 3600))
 
 
+def _pack_panel(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
+    """Paket rejimi (PACKS): oylik obuna emas - tarjima qilinadigan boblar soniga to'lov."""
+    bal = admins.balance(user_id)
+    left = admins.free_left(user_id)
+    status = (f"💰 Balansingiz: <b>{bal} ta bob</b>" if bal else
+              f"🎁 Bepul boblar qoldi: <b>{left}</b> ta" if left else
+              "🎁 Bepul bobingizdan foydalandingiz.")
+    text = ("💰 <b>Boblar paketi</b>\n\n"
+            "Oylik obuna yo'q - to'lov faqat tarjima qilinadigan boblar soniga:\n"
+            + admins.pack_lines() + "\n\n"
+            "• Paket muddatsiz: boblar tugaguncha ishlatasiz\n"
+            "• Har tarjima qilingan bob balansdan bitta yechiladi\n"
+            "• Ish bajarilmasa (xato/bekor) - bob qaytariladi\n\n"
+            f"{status}\n\n"
+            f"To'lov uchun pastdagi tugmani bosib, egasiga yozing va ID'ingizni yuboring: "
+            f"<code>{user_id}</code>")
+    rows = []
+    if _owner_name():
+        rows.append([InlineKeyboardButton(f"✍️ @{_owner_name()} ga yozish",
+                                          url=f"https://t.me/{_owner_name()}")])
+    rows.append([_btn("⬅️ Orqaga", "m:main")])
+    return text, InlineKeyboardMarkup(rows)
+
+
 def _sub_panel(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
     """Foydalanuvchiga: oylik obuna narxi va egasining akkaunti (bosganda yozishma ochiladi)."""
+    if admins.PACKS_ON:
+        return _pack_panel(user_id)
     until = admins.sub_until(user_id)
     old = f"<s>{SUB_OLD_PRICE}</s> " if SUB_OLD_PRICE else ""
     if until > time.time():
@@ -767,11 +822,31 @@ async def _ask_owner_to_pay(context, user) -> None:
             chat_id=OWNER_ID,
             text=(f"💳 Bepul bobi tugagan foydalanuvchi:\n\n"
                   f"Ism: {user.full_name or user.id}{handle}\nID: {user.id}\n\n"
-                  f"To'lov qilsa - pastdagi tugma bilan 1 oylik bering."),
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("✅ To'ladi - 1 oylik berish", callback_data=f"paid:{user.id}")]]))
+                  + ("To'lov qilsa - pastdagi tugmalardan paketini bering."
+                     if admins.PACKS_ON else "To'lov qilsa - pastdagi tugma bilan 1 oylik bering.")),
+            reply_markup=InlineKeyboardMarkup(
+                [_pack_buttons(user.id)] if admins.PACKS_ON else
+                [[InlineKeyboardButton("✅ To'ladi - 1 oylik berish",
+                                       callback_data=f"paid:{user.id}")]]))
     except TelegramError as exc:
         logger.warning("Egasiga to'lov xabari yuborilmadi: %s", exc)
+
+
+def _pack_buttons(target: int) -> list:
+    """Admin uchun: har paket bitta tugma (pack:<id>:<bob soni>)."""
+    return [_btn(f"✅ +{n} bob ({admins.money(price)})", f"pack:{target}:{n}")
+            for n, price in admins.PACKS]
+
+
+async def on_pack_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """pack:<id>:<bob soni> - foydalanuvchi balansiga paket qo'shish (faqat bot egasi)."""
+    query = update.callback_query
+    if not admins.is_superadmin(query.from_user.id):
+        await query.answer("Bu tugma faqat bot egasi uchun.", show_alert=True)
+        return
+    await query.answer()
+    _, raw, n = query.data.split(":")
+    await _set_paid(context, int(raw), True, query=query, n=int(n))
 
 
 async def on_paid_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -794,8 +869,29 @@ async def _label(context, uid: int) -> str:
         return str(uid)
 
 
-async def _set_paid(context, target: int, grant: bool, query=None, message=None) -> None:
+async def _set_paid(context, target: int, grant: bool, query=None, message=None, n: int = 0) -> None:
     who = await _label(context, target)
+    if admins.PACKS_ON:                  # oylik obuna emas - balansga N ta bob
+        if grant:
+            n = n or admins.PACKS[0][0]
+            left = admins.add_balance(target, n)
+            text = f"✅ {who} ({target}) - +{n} ta bob qo'shildi. Balansi: {left} ta bob."
+            try:
+                await context.bot.send_message(
+                    target, f"✅ To'lovingiz qabul qilindi! Hisobingizga <b>+{n} ta bob</b> "
+                            f"qo'shildi.\n💰 Balansingiz: <b>{left} ta bob</b>.\n\n"
+                            "Bobning PDF faylini yoki rasmlarini yuboring - har tarjima qilingan "
+                            "bob balansdan bitta yechiladi (muddat cheklovi yo'q).", parse_mode="HTML")
+            except TelegramError:
+                text += "\n(unga xabar yetib bormadi - u botga hali /start bosmagan bo'lishi mumkin)"
+        else:
+            text = (f"🚫 {who} ({target}) - paket balansi tozalandi."
+                    if admins.clear_balance(target) else f"{target} balansi allaqachon bo'sh.")
+        if query is not None:
+            await query.edit_message_text(text)
+        elif message is not None:
+            await message.reply_text(text)
+        return
     if grant:
         until = admins.add_paid(target)
         text = f"✅ {who} ({target}) - obuna {_date(until)} gacha."
@@ -815,7 +911,11 @@ async def _set_paid(context, target: int, grant: bool, query=None, message=None)
 
 
 async def paid_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/oylik <@username|id> - 1 oy berish (/oylik - ro'yxat); /oylikolish <@username|id> - olish."""
+    """/oylik <@username|id> - 1 oy berish (/oylik - ro'yxat); /oylikolish <@username|id> - olish.
+
+    Paket rejimida (PACKS): /paket <@username|id> [bob soni] - balansga bob qo'shish,
+    /paketolish <@username|id> - balansni tozalash.
+    """
     if not admins.is_superadmin(update.effective_user.id):
         await update.effective_message.reply_text("Bu buyruq faqat bot egasi uchun.")
         return
@@ -828,17 +928,34 @@ async def paid_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 f"{context.args[0]} topilmadi. U botga kamida bir marta /start yozgan bo'lishi kerak - "
                 "yoki uning ID raqamini yuboring (ID'ni u botdagi 💳 Oylik obuna bo'limida ko'radi).")
             return
-        await _set_paid(context, target, grant, message=update.effective_message)
+        n = int(context.args[1]) if len(context.args) > 1 and context.args[1].isdigit() else 0
+        await _set_paid(context, target, grant, message=update.effective_message, n=n)
         return
     if not grant:
-        await update.effective_message.reply_text("Foydalanish: /oylikolish @username yoki ID")
+        await update.effective_message.reply_text(
+            "Foydalanish: /paketolish @username yoki ID" if admins.PACKS_ON
+            else "Foydalanish: /oylikolish @username yoki ID")
         return
     await paid_list_cmd(update, context)
 
 
 async def paid_list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """📅 Bir oylik bo'limi: obunachilar, qolgan kunlar, +1 oy / olib tashlash tugmalari."""
+    """📅 Bir oylik (yoki 💰 Paketlar) bo'limi: kim to'lagan, qancha qolgan, tugmalar."""
     if not admins.is_superadmin(update.effective_user.id):
+        return
+    if admins.PACKS_ON:
+        lines, buttons = [], []
+        for uid, left in admins.list_balances():
+            who = await _label(context, uid)
+            lines.append(f"💰 {who} - {left} ta bob qoldi")
+            buttons.append([_btn(f"+{admins.PACKS[0][0]}: {who}"[:60], f"pack:{uid}:{admins.PACKS[0][0]}"),
+                            _btn("🗑", f"unpaid:{uid}")])
+        buttons.append([_btn("➕ Odam qo'shish (paket)", "m:do:subadd")])
+        await update.effective_message.reply_text(
+            "💰 <b>Paket olganlar</b>\n\n" + admins.pack_lines() + "\n\n"
+            + ("\n".join(html.escape(x) for x in lines) or "Hozircha hech kim.")
+            + "\n\nQo'shish: tugmani bosib @username yoki ID yuboring, yoki /paket @username 200",
+            reply_markup=InlineKeyboardMarkup(buttons), parse_mode="HTML")
         return
     now = time.time()
     lines, buttons = [], []
@@ -895,6 +1012,13 @@ def _refund(job: dict) -> None:
             _free_groups.pop(job["user"], None)
         except Exception:
             logger.exception("Bepul bob hisobi qaytarilmadi")
+    if job.get("bal"):                   # paket balansidan yechilgan bob
+        job["bal"] = False
+        try:
+            admins.add_balance(job["user"], 1)
+            _free_groups.pop(job["user"], None)
+        except Exception:
+            logger.exception("Paket balansi qaytarilmadi")
 
 
 def _pick_job() -> dict | None:
@@ -1356,6 +1480,10 @@ async def handle_other(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await msg.reply_text(f"{msg.text.strip()} topilmadi. U botga kamida bir marta /start yozgan "
                                  "bo'lishi kerak. Uning ID raqamini yuboring yoki /start bilan bekor qiling.")
             return
+        if admins.PACKS_ON:
+            await msg.reply_text(f"💰 {target} uchun paketni tanlang:",
+                                 reply_markup=InlineKeyboardMarkup([_pack_buttons(target)]))
+            return
         await _set_paid(context, target, True, message=msg)
         return
     if msg.text and context.user_data.pop("await_rule", False) and admins.is_admin(user_id):
@@ -1432,8 +1560,8 @@ def _build_app(token: str) -> Application:
     app.add_handler(CommandHandler("addadmin", add_admin_cmd))
     app.add_handler(CommandHandler("removeadmin", remove_admin_cmd))
     app.add_handler(CommandHandler("qoida", rules_cmd))
-    app.add_handler(CommandHandler(["oylik", "ruxsat"], paid_cmd))
-    app.add_handler(CommandHandler(["oylikolish", "ruxsatolish"], paid_cmd))
+    app.add_handler(CommandHandler(["oylik", "ruxsat", "paket"], paid_cmd))
+    app.add_handler(CommandHandler(["oylikolish", "ruxsatolish", "paketolish"], paid_cmd))
     app.add_handler(CommandHandler("qoidaochir", remove_rule_cmd))
     app.add_handler(MessageHandler(
         # PDF/rasm "fayl" sifatida noto'g'ri turda kelishi mumkin (application/octet-stream) -
@@ -1453,6 +1581,7 @@ def _build_app(token: str) -> Application:
     app.add_handler(CallbackQueryHandler(on_menu_button, pattern=r"^m:"))
     app.add_handler(CallbackQueryHandler(shop.on_button, pattern=r"^sh:"))
     app.add_handler(CallbackQueryHandler(on_paid_button, pattern=r"^(paid|unpaid):\d+$"))
+    app.add_handler(CallbackQueryHandler(on_pack_button, pattern=r"^pack:\d+:\d+$"))
     app.add_handler(CallbackQueryHandler(on_rule_delete, pattern=r"^rdel:\d+$"))
     app.add_handler(CallbackQueryHandler(on_admin_button, pattern=r"^(allow|deny|remove):"))
     app.add_error_handler(on_error)
