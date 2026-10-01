@@ -170,6 +170,14 @@ def _flood_gradient(sub: np.ndarray, tbox: tuple[int, int, int, int],
     zy1, zy2, zx1, zx2 = max(0, ty1 - 8), min(h, ty2 + 8), max(0, tx1 - 10), min(w, tx2 + 10)
     back[zy1:zy2, zx1:zx2] = closed[zy1:zy2, zx1:zx2]
     back = cv2.GaussianBlur(back, (5, 5), 0)          # tekstura/JPEG shovqini
+    if FONT_STYLES:
+        # Ingichka och kulrang kontur blur'dan keyin deyarli yo'qolib, tarqalish undan sizib
+        # o'tardi: pufakcha ichi orqadagi osmon rangiga bo'yalib, kontur o'chib ketardi
+        # (foydalanuvchi skrinshoti, 2026-10-01). Keskin chiziqlar (mahalliy kontrast) -
+        # matn zonasidan tashqarida qattiq to'siq. Silliq gradient esa to'siq bo'lmaydi.
+        edge = cv2.morphologyEx(gray, cv2.MORPH_GRADIENT, np.ones((3, 3), np.uint8)) > 35
+        edge[zy1:zy2, zx1:zx2] = False
+        back[edge] = 0
     # urug': matn qutisida fonning eng odatiy (median) qiymatiga yaqin nuqta
     patch = back[ty1:ty2, tx1:tx2].astype(np.int16)
     med = np.median(patch)
@@ -436,6 +444,17 @@ def _surrounding_region(close: np.ndarray, text_box: tuple[int, int, int, int]) 
     if counts[best] == 0:
         return _flood(close, text_box)
     return labels == best
+
+
+def _leaked(shape, box) -> bool:
+    """Sizib chiqqan hudud: pufakcha (ingichka och kontur) sahifa foni/rasm bilan qo'shilib ketgan -
+    qidiruv oynasining (yoki sahifaning) 2+ tomoniga yetgan va matndan 3 barobardan katta. Bunda
+    butun hudud bo'yalsa pufakcha osmon rangiga kirib, konturi o'chardi (foydalanuvchi skrinshoti,
+    2026-10-01) - chaqiruvchi faqat harflarni o'chiradi, pufakcha va konturi tegilmaydi."""
+    fill = shape[2]
+    sides = sum(bool(v.any()) for v in (fill[:, 0], fill[0, :], fill[:, -1], fill[-1, :]))
+    bw, bh = box[2] - box[0], box[3] - box[1]
+    return sides >= 2 and int(fill.sum()) > 3 * bw * bh
 
 
 def _fill_bubble(arr: np.ndarray, box: tuple[int, int, int, int],
@@ -801,6 +820,21 @@ def _draw_in_shape(draw, shape, text_box, text: str, color, max_size: int | None
     return False
 
 
+def _flat_bg(arr: np.ndarray, box: tuple[int, int, int, int]) -> tuple[int, int, int] | None:
+    """Quti atrofidagi halqa bir xil (tekis) rangmi - bo'lsa o'sha rang, aks holda None."""
+    H, W = arr.shape[:2]
+    x1, y1, x2, y2 = box
+    p = 8
+    ring = np.concatenate([
+        arr[max(0, y1 - p):y1, x1:x2].reshape(-1, 3), arr[y2:min(H, y2 + p), x1:x2].reshape(-1, 3),
+        arr[y1:y2, max(0, x1 - p):x1].reshape(-1, 3), arr[y1:y2, x2:min(W, x2 + p)].reshape(-1, 3)])
+    if len(ring) < 20:
+        return None
+    med = np.median(ring, axis=0)
+    close = (np.abs(ring.astype(np.int16) - med.astype(np.int16)).max(axis=1) < 18).mean()
+    return tuple(int(v) for v in med) if close > 0.9 else None
+
+
 def _fill_masked(arr: np.ndarray, box: tuple[int, int, int, int], mask: np.ndarray,
                  allowed: np.ndarray | None = None, margin: int = 48) -> None:
     """box ichidagi mask piksellarini atrofdan SILLIQ va TEKSTURALI to'ldiradi (FONT_STYLES).
@@ -898,6 +932,21 @@ def _inpaint_text(arr: np.ndarray, box: tuple[int, int, int, int]) -> tuple[int,
     try:
         import cv2
 
+        flat = _flat_bg(arr, (x1, y1, x2, y2)) if FONT_STYLES else None
+        if flat is not None:
+            # Tekis fon (oq pufakcha/sahifa): fondan farq qiladigan piksel - harf; fon rangi bilan
+            # bo'yaladi (xira iz qolmaydi). Quti chetiga tegib turgan bo'lak - harf emas, pufakcha
+            # konturi/ramka - o'chirilmaydi. Bo'laklar KENGAYTIRISHDAN OLDIN ajratiladi.
+            raw = (np.abs(region.astype(np.int16) - np.array(flat, np.int16)).max(axis=2) > 40)
+            n, lab, st, _ = cv2.connectedComponentsWithStats(raw.astype(np.uint8), 8)
+            hh, ww = raw.shape
+            for i in range(1, n):
+                x, y, w_, h_ = st[i, 0], st[i, 1], st[i, 2], st[i, 3]
+                if x <= 0 or y <= 0 or x + w_ >= ww or y + h_ >= hh:
+                    raw[lab == i] = False
+            m = cv2.dilate(raw.astype(np.uint8), np.ones((3, 3), np.uint8), iterations=2) > 0
+            region[m] = flat
+            return (x1, y1, x2, y2)
         mask = cv2.dilate(mask, np.ones((3, 3), np.uint8), iterations=3 if FONT_STYLES else 2)
         if FONT_STYLES:
             _fill_masked(arr, (x1, y1, x2, y2), mask > 0)
@@ -1038,6 +1087,8 @@ def _draw_job(out: Image.Image, draw, job, off: tuple[int, int]) -> None:
         tbox = (tbox[0] - ox, tbox[1] - oy, tbox[2] - ox, tbox[3] - oy)
         if shape is None or not _draw_in_shape(draw, shape, tbox, text, color, extra):
             _draw_block(draw, box, text, color, max_size=extra)
+    elif mode == "flat":
+        _draw_block(draw, box, text, _text_color_for(bg_color), max_size=extra)
     elif mode == "system":
         dark = tuple(int(v * 0.35) for v in bg_color)
         _draw_block(draw, box, text, job[5], max_size=extra, stroke=dark, pad=2)
@@ -1138,18 +1189,26 @@ def render_translation(image_bytes: bytes, translations: list[dict], quality: in
                 jobs.append(("system", area, bg_color, uzbek_text, max_size, sys_ink, angle))
                 continue
         before = _ink(arr, box, bg_color)
-        filled = _fill_bubble(arr, box, bg_color)
-        if FONT_STYLES and filled is not None and filled[1]:
-            # Katta pufakcha (baqiriq) qidiruv oynasiga sig'madi - kattaroq oynada qayta. Aks holda
-            # "ochiq pufakcha" deb matn asl yozuvning tor joyiga mayda bo'lib siqilardi va tikan
-            # chetidan chiqib ketardi (foydalanuvchi skrinshoti, 2026-10-01). Avval nusxada sinaladi.
-            for grow in (2.5, 4.0):
-                trial = arr.copy()
-                bigger = _fill_bubble(trial, box, bg_color, grow=grow)
-                if bigger is not None and not bigger[1]:
-                    arr[:] = trial
-                    filled = bigger
-                    break
+        if FONT_STYLES:
+            # Hammasi avval NUSXADA sinaladi. Katta pufakcha (baqiriq) qidiruv oynasiga sig'masa -
+            # kattaroq oynada qayta (aks holda matn tor joyga mayda siqilib, tikandan chiqardi).
+            # Hudud sahifa/rasmga sizib chiqqan bo'lsa (_leaked) - pufakcha bo'yalmaydi.
+            trial = arr.copy()
+            filled = _fill_bubble(trial, box, bg_color)
+            if filled is not None and filled[1]:
+                for grow in (2.5, 4.0):
+                    t2 = arr.copy()
+                    bigger = _fill_bubble(t2, box, bg_color, grow=grow)
+                    if bigger is not None and not bigger[1] and not _leaked(bigger[2], box):
+                        trial, filled = t2, bigger
+                        break
+                else:
+                    if filled[2] is not None and _leaked(filled[2], box):
+                        filled = None
+            if filled is not None:
+                arr[:] = trial
+        else:
+            filled = _fill_bubble(arr, box, bg_color)
         if filled is not None:
             inner, touched, shape = filled
             style = _bubble_style(shape, touched)   # shakl quyida (ochiq pufakchada) tashlanishidan oldin
@@ -1179,8 +1238,14 @@ def render_translation(image_bytes: bytes, translations: list[dict], quality: in
             jobs.append(("bubble", inner, bg_color, uzbek_text, max_size, shape, box, upper,
                          ink_color, style, angle))
         else:
+            flat = _flat_bg(arr, box) if FONT_STYLES else None
             area = _inpaint_text(arr, box)
-            jobs.append(("art", area, None, uzbek_text, max_size, angle))
+            if flat is not None:
+                # tekis fondagi yozuv (kontur uzuq pufakcha) - oddiy pufakcha matni kabi:
+                # komiks shrifti, konturisiz, fon rangiga mos rang
+                jobs.append(("flat", area, flat, uzbek_text, max_size, angle))
+            else:
+                jobs.append(("art", area, None, uzbek_text, max_size, angle))
 
     jobs = _merge_same_bubble(jobs)
 
@@ -1189,8 +1254,8 @@ def render_translation(image_bytes: bytes, translations: list[dict], quality: in
     draw = ImageDraw.Draw(out)
     for job in jobs:
         mode, box, bg_color, text, extra = job[:5]
-        _style.name = job[9] if mode == "bubble" else mode
-        angle = job[-1] if mode in ("bubble", "system", "art") else 0.0
+        _style.name = job[9] if mode == "bubble" else ("speech" if mode == "flat" else mode)
+        angle = job[-1] if mode in ("bubble", "system", "art", "flat") else 0.0
         if abs(angle) >= TILT_MIN and abs(angle) <= TILT_MAX:
             _draw_tilted(out, job, angle)
             continue
