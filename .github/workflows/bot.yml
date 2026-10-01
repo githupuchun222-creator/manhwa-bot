@@ -53,6 +53,11 @@ jobs:
           SHOP_UI: "1"
           # Navbatsiz: bir vaqtda 3 ta ish, bo'sh foydalanuvchi oldinga (bot.py _pick_job)
           PARALLEL_JOBS: "3"
+          # Bob bir yo'la tarjima (2026-10-01): Gemini'ga sahifa boshiga emas, 40 qatorlik bo'laklarda
+          # (13 sahifali bob: 13 so'rov -> 1-2). Lite modellar ham "low" fikrlash bilan (sifat uchun).
+          CHAPTER_BATCH: "1"
+          GEMINI_CHUNK: "40"
+          GEMINI_MODELS: "gemini-3.5-flash:low,gemini-3.8-flash:low,gemini-3.7-flash:low,gemini-3.6-flash:low,gemini-3-flash-preview:low,gemini-3.5-flash-lite:low,gemini-3.1-flash-lite:low,gemini-3.1-flash-lite-preview:low,gemma-4-31b-it"
           OWNER_USERNAME: sharofovsaid
           # 20 MB dan katta fayllar (bigfile.py, MTProto)
           TG_API_ID: ${{ secrets.TG_API_ID }}

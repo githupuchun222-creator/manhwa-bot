@@ -618,6 +618,8 @@ def _gemini(english: list[str], drafts: list[str]) -> list[str] | None:
                 + json.dumps(dict(list(_names.items())[-40:]), ensure_ascii=False) + "\n\n" + user)
     # Haqiqiy sinovda 3.5-flash-lite bir marta buzuq JSON, 3.1-flash-lite 503 berdi va
     # butun sahifa Google'ning quruq tarjimasida qoldi. Endi har model 2 marta, oraliqda kutib.
+    if not _gemini_ready():
+        return None
     system = _system_prompt()
     for attempt in range(2):
         for spec in GEMINI_MODELS:
@@ -666,9 +668,14 @@ def _gemini(english: list[str], drafts: list[str]) -> list[str] | None:
     return None
 
 
+_CYRILLIC = re.compile(r"[Ѐ-ӿ]")
+
+
 def _sane(draft: str, polished: str) -> bool:
-    """AI qo'shib yubormadimi (pufakchaga sig'masin, ma'no o'zgarmasin)."""
-    return bool(polished.strip()) and len(polished) <= max(2.2 * len(draft), len(draft) + 25)
+    """AI qo'shib yubormadimi (pufakchaga sig'masin, ma'no o'zgarmasin). Kirill harfli
+    javob (sinovda "nima deb валжаяпсиз?") - rad etiladi, Google varianti qoladi."""
+    return (bool(polished.strip()) and len(polished) <= max(2.2 * len(draft), len(draft) + 25)
+            and not _CYRILLIC.search(polished))
 
 
 def _fix_ai(text: str) -> str:
@@ -679,14 +686,37 @@ def _fix_ai(text: str) -> str:
     return text
 
 
+# BOB BIR YO'LA (2026-10-01, foydalanuvchi: "limitni ko'paytir, sifatga zarracha ta'sir qilmasin"):
+# bepul limit SO'ROVLAR soni bilan - butun bob (CHAPTER_BATCH) bitta ro'yxat bo'lib keladi va
+# GEMINI_CHUNK qatorlik bo'laklarda yuboriladi (13 sahifali bob: 13 so'rov -> 2-3 so'rov).
+# Sifat: model butun sahnani ko'radi; javob qatorlar soniga mos kelmasa bo'lak ikkiga bo'linib
+# qayta so'raladi (Google'ga tushib qolmasin), eng kichigi 20 qator - avvalgi o'lcham.
+GEMINI_CHUNK = max(20, int(os.getenv("GEMINI_CHUNK", "20")))
+
+
+def _gemini_ready() -> bool:
+    now = time.time()
+    return any(_cooldown.get((k, spec.partition(":")[0]), 0) <= now
+               for spec in GEMINI_MODELS for k in range(len(GEMINI_KEYS)))
+
+
+def _polish_part(english: list[str], drafts: list[str]) -> list[str]:
+    part = _gemini(english, drafts)
+    if part is None and len(english) > 20 and _gemini_ready():
+        half = len(english) // 2
+        return _polish_part(english[:half], drafts[:half]) + _polish_part(english[half:], drafts[half:])
+    return part if part is not None else drafts         # shu bo'lak Google'da qoladi
+
+
 def _llm_polish(english: list[str], drafts: list[str]) -> list[str] | None:
     if GEMINI_KEY:
         out: list[str] = []
-        for i in range(0, len(english), 20):            # uzun sahifa - bo'laklab
-            part = _gemini(english[i:i + 20], drafts[i:i + 20])
-            if part is None:
-                part = drafts[i:i + 20]                 # shu bo'lak Google'da qoladi
-            out += part
+        n = GEMINI_CHUNK
+        if len(english) > n:                             # teng bo'laklar (oxirgisi juda kichik bo'lmasin)
+            parts = -(-len(english) // n)
+            n = -(-len(english) // parts)
+        for i in range(0, len(english), n):
+            out += _polish_part(english[i:i + n], drafts[i:i + n])
         return [_fix_ai(p) if p != d and _sane(d, p) else d for p, d in zip(out, drafts)]
     body = json.dumps({"lines": english, "drafts": drafts}).encode("utf-8")
     req = urllib.request.Request(LLM_URL, data=body, headers={

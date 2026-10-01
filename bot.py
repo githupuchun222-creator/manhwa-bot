@@ -1006,6 +1006,48 @@ def _archive(job: str, name: str, data: bytes) -> None:
         logger.warning("Arxivga saqlanmadi: %s", exc)
 
 
+# BOB BIR YO'LA (CHAPTER_BATCH=1): avval hamma sahifa o'qiladi (OCR), keyin butun bob matni
+# BITTA tarjima chaqiruvida (Gemini'ga 2-3 so'rov, sahifa boshiga emas), so'ng sahifalar chiziladi.
+CHAPTER_BATCH = os.getenv("CHAPTER_BATCH", "") == "1"
+
+
+async def _chapter_batch(pages, limit: int, budget: dict, status_msg, t0: float):
+    reads: list[list[dict]] = []
+    failed: list[int] = []
+    for num, _total, jpeg in pages:
+        elapsed = int(time.time() - t0)
+        await _edit_status(status_msg, f"O'qilmoqda: {num}/{limit}-sahifa "
+                                       f"({elapsed // 60}:{elapsed % 60:02d} o'tdi)")
+        try:
+            async with _ai_semaphore:
+                reads.append(await asyncio.to_thread(read_page, jpeg, "image/jpeg", budget))
+        except TranslationError as exc:
+            logger.warning("PDF %d-sahifa o'qilmadi: %s", num, exc)
+            reads.append([])
+            failed.append(num)
+    await _edit_status(status_msg, "Butun bob tarjima qilinmoqda (AI)...")
+    flat = []
+    for page_no, read in enumerate(reads):
+        for item in read:
+            item["_page"] = page_no
+            flat.append(item)
+    done = await asyncio.to_thread(finish_page, flat) if flat else []
+    per_page: list[list[dict]] = [[] for _ in reads]
+    for item in done:
+        per_page[item.pop("_page")].append(item)
+    await _edit_status(status_msg, "Sahifalarga yozilmoqda...")
+    sem = asyncio.Semaphore(3)
+
+    async def draw(jpeg: bytes, items: list[dict]) -> bytes:
+        if not items:
+            return jpeg
+        async with sem:
+            return await asyncio.to_thread(render_translation, jpeg, items, PDF_JPEG_QUALITY)
+
+    out = await asyncio.gather(*(draw(jpeg, items) for (_, _, jpeg), items in zip(pages, per_page)))
+    return list(out), sum(len(i) for i in per_page), failed
+
+
 async def _process_pdf(update: Update | None, context: ContextTypes.DEFAULT_TYPE,
                        pdf_bytes: bytes, status_msg, chat_id: int | None = None,
                        src_name: str | None = None, ref: str | None = None) -> None:
@@ -1054,8 +1096,10 @@ async def _process_pdf(update: Update | None, context: ContextTypes.DEFAULT_TYPE
             return jpeg, 0                    # matnsiz sahifa - aslicha (PDF to'liq bo'lsin)
         return await asyncio.to_thread(render_translation, jpeg, items, PDF_JPEG_QUALITY), len(items)
 
+    if CHAPTER_BATCH:
+        out_pages, texts, failed = await _chapter_batch(pages, limit, budget, status_msg, t0)
     pending: list[asyncio.Task] = []
-    for num, _total, jpeg in pages:
+    for num, _total, jpeg in ([] if CHAPTER_BATCH else pages):
         elapsed = int(time.time() - t0)
         await _edit_status(status_msg, f"Tarjima qilinmoqda: {num}/{limit}-sahifa "
                                        f"({elapsed // 60}:{elapsed % 60:02d} o'tdi)")
