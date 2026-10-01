@@ -36,7 +36,29 @@ ROLE = os.getenv("RUNNER_ROLE", "backup")
 STANDBY_EVERY = 5
 
 
+async def _gate_ready() -> None:
+    """Noutbuk/telefon nusxasi: darvoza darajalarni tushunmaguncha xabar OLMAYDI.
+
+    Eski darvoza "role"ni bilmaydi - unda bu nusxa GitHub'dagi bilan bir vaqtda xabar olib,
+    holat faylini (obuna, hisob) bir-birining ustiga yozib yuborardi. /status javobida
+    "laptop_alive" paydo bo'lguncha (yangi darvoza joylanguncha) kutamiz.
+    """
+    if ROLE == "backup":
+        return
+    async with httpx.AsyncClient(timeout=20) as c:
+        while True:
+            try:
+                r = await c.get(f"{GATE_URL}/status", headers={"x-key": GATE_KEY})
+                if "laptop_alive" in r.json():
+                    return
+                log.info("Darvoza hali yangilanmagan - kutilmoqda (xabar olinmaydi)")
+            except Exception as exc:
+                log.warning("Darvoza holati olinmadi: %s", exc)
+            await asyncio.sleep(60)
+
+
 async def main() -> None:
+    await _gate_ready()
     started = time.time()
     threading.Thread(target=fast_ocr.warm_up, daemon=True).start()
     await asyncio.to_thread(admins.pull_remote)
