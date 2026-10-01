@@ -1249,7 +1249,9 @@ async def _chapter_batch(pages, limit: int, budget: dict, status_msg, t0: float)
     for item in done:
         per_page[item.pop("_page")].append(item)
     await _edit_status(status_msg, "Sahifalarga yozilmoqda...")
-    sem = asyncio.Semaphore(3)
+    # Chizish ham xotira ham CPU talab qiladi: parallel ish ko'p bo'lsa, har ishda kamroq
+    # sahifa bir vaqtda chiziladi (jami ~8 ta sahifa - xotira to'lib ketmasin).
+    sem = asyncio.Semaphore(max(1, 8 // max(1, PARALLEL_JOBS)))
 
     async def draw(jpeg: bytes, items: list[dict]) -> bytes:
         if not items:
