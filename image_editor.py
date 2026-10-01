@@ -1353,10 +1353,24 @@ def render_translation(image_bytes: bytes, translations: list[dict], quality: in
                 # bilan cheklanadi - matn pufakchadan chiqmasin.
                 lim = _flat_area(arr, box, flat)
                 if lim is not None and lim[2] - lim[0] > 20 and lim[3] - lim[1] > 20:
-                    area = (max(area[0], lim[0]), max(area[1], lim[1]),
-                            min(area[2], lim[2]), min(area[3], lim[3]))
-                    if area[2] - area[0] < 20 or area[3] - area[1] < 20:
-                        area = lim
+                    inter = (max(area[0], lim[0]), max(area[1], lim[1]),
+                             min(area[2], lim[2]), min(area[3], lim[3]))
+                    iw, ih = inter[2] - inter[0], inter[3] - inter[1]
+                    aw, ah = max(1, area[2] - area[0]), max(1, area[3] - area[1])
+                    # Cheklov faqat YENGIL qirqish bo'lsa qo'llanadi. Aks holda matn tor tasmaga
+                    # siqilib, mayda bo'lib pufakchadan tashqarida chiqib qolardi (foydalanuvchi
+                    # namunasi, 2026-10-01: katta pufakcha bo'sh, matn uning ostida mayda).
+                    if iw > 0.6 * aw and ih > 0.6 * ah:
+                        area = inter
+                    # Pufakcha ichida ko'p joy bo'lsa - matnga o'sha joyni beramiz (markazda,
+                    # shrift baribir max_size bilan cheklangan)
+                    cx, cy = (area[0] + area[2]) / 2, (area[1] + area[3]) / 2
+                    if lim[0] <= cx <= lim[2] and lim[1] <= cy <= lim[3]:
+                        half_w = min(cx - lim[0], lim[2] - cx)
+                        half_h = min(cy - lim[1], lim[3] - cy)
+                        if half_w * 2 > area[2] - area[0] and half_h * 2 > area[3] - area[1]:
+                            area = (int(cx - half_w), int(cy - half_h),
+                                    int(cx + half_w), int(cy + half_h))
                 jobs.append(("flat", area, flat, uzbek_text, max_size, angle))
             else:
                 jobs.append(("art", area, None, uzbek_text, max_size, angle))

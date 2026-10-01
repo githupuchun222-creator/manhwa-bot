@@ -31,14 +31,31 @@ logger = logging.getLogger(__name__)
 ENABLED = os.getenv("SHOP_UI", "") == "1"
 B = None                      # bot moduli (bot.py setup'da beradi) - navbat, konveyer, yordamchilar
 
-BTN_ORDER = "📖 Tarjima buyurtma qilish"
-BTN_FREE = "🎁 Bepul bob"
-BTN_MINE = "📂 Buyurtmalarim"
-BTN_PRICE = "💰 Narxlar va shartlar"
-BTN_CONTACT = "✉️ Admin bilan bog‘lanish"
-BTN_HELP = "❓ Yordam"
+# MENYU (2026-10-01 soddalashtirildi, foydalanuvchi: "bot ishlatish qiyin va chalkash").
+# Oldin 6 tugma va 6 bosqichli buyurtma (nom -> bob -> asl til -> maqsad til -> sahifalar -> izoh)
+# bor edi; tarjima dvigateli bu ma'lumotlarning hech birini ishlatmaydi. Endi 4 tugma va bitta
+# yuklash seansi: fayl yuboriladi -> 🚀 Tarjima qilish. Nom - ixtiyoriy (tarix uchun).
+BTN_ORDER = "📖 Tarjima boshlash"
+BTN_MINE = "📂 Tarjimalarim"
+BTN_PAY = "💰 Paket va balans" if admins.PACKS_ON else "💎 Obuna va limit"
+BTN_HELP = "💬 Yordam"
 BTN_ADMIN = "⚙️ Admin panel"
-MENU_BUTTONS = {BTN_ORDER, BTN_FREE, BTN_MINE, BTN_PRICE, BTN_CONTACT, BTN_HELP, BTN_ADMIN}
+# Eski tugmalar: foydalanuvchida eski klaviatura qolgan bo'lsa ham ishlashi kerak
+LEGACY_BUTTONS = {
+    "📖 Tarjima buyurtma qilish": BTN_ORDER,
+    "🎁 Bepul bob": BTN_PAY,
+    "💰 Narxlar va shartlar": BTN_PAY,
+    "💰 Paket va balans": BTN_PAY,
+    "💎 Obuna va limit": BTN_PAY,
+    "✉️ Admin bilan bog‘lanish": BTN_HELP,
+    "❓ Yordam": BTN_HELP,
+    "📂 Buyurtmalarim": BTN_MINE,
+}
+BTN_FREE, BTN_PRICE, BTN_CONTACT = BTN_PAY, BTN_PAY, BTN_HELP      # eski nomlar (moslik uchun)
+MENU_BUTTONS = {BTN_ORDER, BTN_MINE, BTN_PAY, BTN_HELP, BTN_ADMIN} | set(LEGACY_BUTTONS)
+
+# Bir xil so'zlar (hamma ekranda bir xil ishlashi uchun)
+TXT_BACK, TXT_HOME, TXT_CANCEL = "⬅️ Orqaga", "🏠 Bosh menyu", "❌ Bekor qilish"
 
 SRC_LANGS = [("en", "🇬🇧 Inglizcha"), ("ko", "🇰🇷 Koreyscha"), ("ja", "🇯🇵 Yaponcha"),
              ("zh", "🇨🇳 Xitoycha"), ("xx", "🤷 Aniq bilmayman")]
@@ -118,13 +135,17 @@ def _trial_line(uid: int) -> str:
 
 # ------------------------------------------------------------------ menyular
 def main_keyboard(uid: int) -> ReplyKeyboardMarkup:
+    """Doimiy pastki klaviatura: asosiy amal (tarjima) eng tepada va eng keng."""
     rows = [[KeyboardButton(BTN_ORDER)],
-            [KeyboardButton(BTN_FREE), KeyboardButton(BTN_MINE)],
-            [KeyboardButton(BTN_PRICE), KeyboardButton(BTN_CONTACT)],
+            [KeyboardButton(BTN_MINE), KeyboardButton(BTN_PAY)],
             [KeyboardButton(BTN_HELP)]]
     if admins.is_superadmin(uid):
         rows[-1].append(KeyboardButton(BTN_ADMIN))
     return ReplyKeyboardMarkup(rows, resize_keyboard=True, is_persistent=True)
+
+
+def _home_row() -> list:
+    return [_ib(TXT_HOME, "sh:home")]
 
 
 def _ib(text: str, data: str) -> InlineKeyboardButton:
@@ -139,17 +160,32 @@ def _contact_button() -> list:
     return [InlineKeyboardButton("✉️ Admin bilan bog‘lanish", url=f"https://t.me/{_owner()}")] if _owner() else []
 
 
+def _job_line(uid: int) -> str:
+    """Hozir ishlayotgan/navbatdagi bobi bormi (holat xabari o'sha ishning o'zida yangilanadi)."""
+    if B is None:
+        return ""
+    if any(j["user"] == uid for j in B._active):
+        return "⚙️ Hozir bir bobingiz tarjima qilinmoqda - holati o‘sha xabarda yangilanadi."
+    waiting = sum(1 for j in B._waiting if j["user"] == uid)
+    return f"⏳ Navbatda <b>{waiting}</b> ta bobingiz bor." if waiting else ""
+
+
+def _account_text(uid: int) -> str:
+    """Qisqa hisob holati: balans/bepul bob + hozirgi ish."""
+    return "\n".join(x for x in (_trial_line(uid), _job_line(uid)) if x)
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id
-    text = ("👋 <b>Assalomu alaykum!</b>\n\n"
-            "Manhwa boblarini tarjima qildiring. Birinchi buyurtmangizdagi <b>1 bob bepul</b>. "
-            + ("Keyingi boblar uchun <b>boblar paketi</b> olasiz - oylik obuna yo‘q, to‘lov "
-               "faqat tarjima qilinadigan boblar soniga.\n\n" if admins.PACKS_ON else
-               "Keyingi boblar uchun oylik obuna olishingiz yoki admin bilan bog‘lanib, "
-               "narx va muddatni kelishishingiz mumkin.\n\n")
-            + "Tarjimani bot o‘zi bajaradi: matnni o‘qiydi, AI bilan o‘zbekchaga o‘giradi va "
-            "rasmga yozib, <b>PDF</b> qilib qaytaradi (odatda bir bob bir necha daqiqada).\n\n"
-            + _trial_line(uid) + "\n\nPastdagi menyudan tanlang 👇")
+    pages = B.MAX_PDF_PAGES if B else 60
+    text = ("👋 <b>Manhwa tarjimoni</b>\n\n"
+            "Bob sahifalarini yuboring - matnni o‘qiyman, o‘zbekchaga tarjima qilaman va "
+            "bitta <b>PDF</b> qilib qaytaraman (odatda bir necha daqiqa).\n\n"
+            f"📄 Yuborish: <b>PDF</b>, <b>ZIP/CBZ</b> yoki rasmlar (albom ham bo‘ladi). "
+            f"Bitta bob - eng ko‘pi {pages} sahifa.\n\n"
+            + _account_text(uid) + "\n\n"
+            "Faylni shu yerga tashlasangiz bo‘ldi. Bir nechta rasmni <b>bitta bob</b> qilib "
+            f"yig‘ish uchun - <b>{BTN_ORDER}</b>.")
     await update.effective_message.reply_text(text, parse_mode="HTML", reply_markup=main_keyboard(uid))
 
 
@@ -181,54 +217,41 @@ def _limits_text(uid: int | None = None) -> str:
             "• Sifat yo‘qolmasligi uchun rasmlarni <b>fayl</b> sifatida yuborgan yaxshi")
 
 
-async def show_free(update: Update, context, edit=False) -> None:
+async def show_pay(update: Update, context, edit=False) -> None:
+    """💰 Paket va balans - bitta ekranda: hisob, narxlar, to'lov tartibi, admin."""
     uid = update.effective_user.id
-    st = trial_state(uid)
-    text = ("🎁 <b>Bepul bob</b>\n\n"
-            f"Har bir foydalanuvchiga bir martalik <b>{admins.FREE_CHAPTERS} ta bepul bob</b> beriladi "
-            "(boshqa manhwa yuborish uni yangilamaydi).\n\n" + _trial_line(uid) + "\n\n"
-            "<b>Cheklovlar:</b>\n" + _limits_text(uid))
-    rows = []
-    if st in ("mavjud", "cheksiz", "paket"):
-        rows.append([_ib(BTN_ORDER, "sh:order")])
-    elif st == "ishlatilgan":
-        text += ("\n\nBepul bobingizdan foydalandingiz. Davom etish uchun boblar paketini olasiz:\n"
-                 + admins.pack_lines() if admins.PACKS_ON else
-                 "\n\nBepul bobingizdan foydalandingiz. Keyingi boblarning narxi va tayyor bo‘lish "
-                 "muddatini admin bilan kelishishingiz yoki oylik obuna olishingiz mumkin.")
-        rows.append([_ib("💰 Paketlar" if admins.PACKS_ON else "💳 Oylik obuna",
-                         "sh:price")] + _contact_button())
-    await _reply(update, text, InlineKeyboardMarkup(rows) if rows else None, edit)
-
-
-async def show_price(update: Update, context, edit=False) -> None:
-    uid = update.effective_user.id
-    old = f"<s>{B.SUB_OLD_PRICE}</s> " if B.SUB_OLD_PRICE else ""
-    if admins.PACKS_ON:                                    # oylik obuna emas - boblar paketi
-        pay_block = ("💰 <b>Boblar paketi</b> (oylik obuna yo‘q - to‘lov tarjima "
-                     "qilinadigan boblar soniga):\n" + admins.pack_lines() + "\n"
-                     "• Paket muddatsiz: boblar tugaguncha ishlatasiz\n"
-                     "• Har tarjima qilingan bob balansdan bitta yechiladi\n"
-                     "• Ish bajarilmasa (xato/bekor) - bob qaytariladi\n\n"
-                     "<b>To‘lov:</b> admin bilan yozishmada kelishiladi. To‘lovdan keyin admin "
-                     "paketni qo‘lda qo‘shadi (avtomatik to‘lov yo‘q).\n\n")
+    pages = B.MAX_PDF_PAGES if B else 60
+    head = (f"💰 <b>Paket va balans</b>\n\n"
+            f"Hisob birligi: <b>1 bob</b> = bitta yuborilgan bob (eng ko‘pi {pages} sahifa). "
+            "Sahifa yoki rasm soni alohida sanalmaydi.\n\n")
+    free = (f"🎁 Bepul: <b>{admins.FREE_CHAPTERS} ta bob</b> (bir martalik) - "
+            + {"mavjud": "hali ishlatilmagan ✅", "band": "hozirgi bobda ishlatilmoqda ⏳"}.get(
+                trial_state(uid), "ishlatilgan") + "\n") if admins.FREE_CHAPTERS else ""
+    if admins.PACKS_ON:
+        body = (free + f"💰 Balansingiz: <b>{admins.balance(uid)} ta bob</b>\n\n"
+                "📦 <b>Paketlar</b> (oylik obuna yo‘q, muddatsiz):\n"
+                + admins.pack_lines() + "\n\n"
+                "• Har tarjima qilingan bob balansdan bitta yechiladi\n"
+                "• Ish bajarilmasa (xato/bekor) - bob qaytariladi\n\n"
+                "<b>To‘lov:</b> adminga yozing, to‘lovdan keyin admin paketni qo‘shadi "
+                "(botda avtomatik to‘lov yo‘q).")
     else:
-        pay_block = (f"💳 <b>Oylik obuna:</b> 🔥 chegirmada {old}<b>{B.SUB_PRICE}</b> / "
-                     f"{admins.SUB_DAYS} kun - shu muddatda cheklovsiz tarjima\n"
-                     "📚 <b>Alohida boblar / katta hajm:</b> narx bob uzunligi va ishga qarab - "
-                     "admin bilan kelishiladi\n\n"
-                     "<b>To‘lov:</b> admin bilan yozishmada kelishiladi. To‘lovdan keyin admin "
-                     "obunangizni qo‘lda yoqadi (avtomatik to‘lov yo‘q).\n\n")
-    text = ("💰 <b>Narxlar va shartlar</b>\n\n"
-            f"🎁 <b>Bepul:</b> {admins.FREE_CHAPTERS} ta bob (bir martalik)\n"
-            + pay_block +
-            "<b>Cheklovlar:</b>\n" + _limits_text(uid) +
-            (f"\n• Bir kunda eng ko‘pi <b>{admins.DAILY_LIMIT}</b> ta bob (bugun: {admins.daily_used(uid)})"
-             if admins.DAILY_LIMIT and not admins.is_admin(uid) else "") + "\n\n" + _trial_line(uid) +
-            f"\n\nSizning ID: <code>{uid}</code> (admin bilan yozishganda yuboring)")
-    rows = [_contact_button()] if _owner() else []
-    rows.append([_ib("📝 Buyurtma tafsilotlarini yuborish", "sh:inq")])
-    await _reply(update, text, InlineKeyboardMarkup(rows), edit)
+        until = admins.sub_until(uid)
+        body = (free + (f"💳 Obuna: <b>{_date(until)}</b> gacha\n" if until > time.time() else
+                        "💳 Obuna: <b>faol emas</b>\n")
+                + f"\n💳 <b>Oylik obuna:</b> {B.SUB_PRICE} / {admins.SUB_DAYS} kun - "
+                "shu muddatda cheklovsiz tarjima\n\n"
+                "<b>Faollashtirish:</b> adminga yozing, to‘lovdan keyin admin obunani yoqadi "
+                "(botda avtomatik to‘lov yo‘q).")
+    limit = ""
+    if admins.DAILY_LIMIT and not admins.is_admin(uid):
+        limit = (f"\n\n⏰ Kunlik chegara: <b>{admins.DAILY_LIMIT}</b> bob "
+                 f"(bugun ishlatilgan: {admins.daily_used(uid)}). "
+                 "Chegara har kuni 00:00 da yangilanadi (Toshkent vaqti, UTC+5).")
+    rows = [[_ib("✍️ Admin bilan bog‘lanish", "sh:contact")],
+            [_ib("📝 So‘rov yuborish", "sh:inq")], _home_row()]
+    await _reply(update, head + body + limit + f"\n\nSizning ID: <code>{uid}</code>",
+                 InlineKeyboardMarkup(rows), edit)
 
 
 async def show_contact(update: Update, context, edit=False) -> None:
@@ -245,45 +268,192 @@ async def show_contact(update: Update, context, edit=False) -> None:
 
 
 async def show_help(update: Update, context, edit=False) -> None:
-    text = ("❓ <b>Yordam</b>\n\n"
-            "<b>Qanday buyurtma qilinadi:</b>\n"
-            "1️⃣ <b>📖 Tarjima buyurtma qilish</b> ni bosing\n"
-            "2️⃣ Manhwa nomi va bob raqamini yozing, tilni tanlang\n"
-            "3️⃣ Bob sahifalarini yuboring (PDF yoki rasmlar, albom ham bo‘ladi) va "
-            "<b>✅ Yuklash tugadi</b> ni bosing\n"
-            "4️⃣ Tekshirib <b>✅ Tasdiqlash</b> - bot tarjima qilib, PDF qaytaradi\n\n"
-            "<b>Tezkor yo‘l:</b> PDF yoki rasmni to‘g‘ridan-to‘g‘ri yuborsangiz ham tarjima qilinadi.\n\n"
-            "<b>Natija:</b> tarjima qilingan sahifalar bitta PDF faylda (asl rasm ustiga o‘zbekcha "
-            "matn yoziladi). Bitta rasm yuborilsa - tarjima qilingan rasm.\n\n"
-            "<b>Cheklovlar:</b>\n" + _limits_text() + "\n\n"
-            "Xato ko‘rsangiz - natija ostidagi <b>✏️ Xato haqida yozish</b> tugmasi.\n"
-            "Buyruqlar: /start - menyu, /id - ID'ingiz")
-    await _reply(update, text, None, edit)
-
-
-async def show_mine(update: Update, context, edit=False) -> None:
+    """Qisqa yordam: qanday tarjima, fayllar, hisob, to'lov, muammo."""
     uid = update.effective_user.id
-    orders = user_orders(uid)[:10]
+    pages = B.MAX_PDF_PAGES if B else 60
+    mb = (B.max_upload_bytes(uid) // 2**20) if B else 20
+    pay = ("paket balansi (💰 Paket va balans)" if admins.PACKS_ON
+           else "obuna (💎 Obuna va limit)")
+    text = ("💬 <b>Yordam</b>\n\n"
+            "1️⃣ <b>Qanday tarjima qilaman?</b> Bobni shu chatga yuboring - natija bitta "
+            "PDF bo‘lib qaytadi. Bir nechta rasmni bitta bob qilish uchun "
+            f"<b>{BTN_ORDER}</b> ni bosing, rasmlarni yuboring va <b>🚀 Tarjima qilish</b>.\n\n"
+            f"2️⃣ <b>Fayllar:</b> PDF, ZIP/CBZ, JPG, PNG, WEBP. Bitta fayl <b>{mb} MB</b> gacha, "
+            f"bitta bob <b>{pages} sahifa</b> gacha. Sifat yo‘qolmasligi uchun rasmni "
+            "<b>fayl</b> qilib yuborgan yaxshi.\n\n"
+            f"3️⃣ <b>Hisob:</b> 1 bob = 1 hisob (sahifalar alohida sanalmaydi). Qolgani - {pay}.\n\n"
+            "4️⃣ <b>To‘lov:</b> admin bilan yozishmada kelishiladi - to‘lovdan keyin "
+            "admin hisobingizga qo‘shadi.\n\n"
+            "5️⃣ <b>Natija yoqmadi yoki xato bo‘ldi?</b> 📂 Tarjimalarim → kerakli "
+            "bobni oching → ⚠️ Muammo bildirish. Natija saqlanadi: qayta yuborish bepul.\n\n"
+            + _account_text(uid))
+    rows = [[_ib("✍️ Admin bilan bog‘lanish", "sh:contact")], _home_row()]
+    await _reply(update, text, InlineKeyboardMarkup(rows), edit)
+
+
+PAGE = 5                      # tarixda bir sahifada nechta bob
+
+
+def _label(o: dict) -> str:
+    """Bobning ko'rinadigan nomi: foydalanuvchi bergan nom yoki o'zi yasalgani."""
+    title = (o.get("title") or "").strip()
+    if title:
+        return title + (f" {o['chapter']}".rstrip() if o.get("chapter") else "")
+    return f"{len(o.get('files') or [])} fayl \u00b7 {_date(o['created'])}"
+
+
+def save_result(ref: str, file_id: str, kind: str = "doc", caption: str = "") -> None:
+    """Yetkazilgan natijani saqlaydi - keyin qayta yuborish uchun (tarjima qayta ishlamaydi)."""
+    if ref and get_order(ref) is not None:
+        _set_order(ref, result={"id": file_id, "kind": kind, "caption": caption[:900]})
+
+
+def quick_record(user, files: list, kind: str) -> str:
+    """Tezkor yo'l (fayl to'g'ridan-to'g'ri yuborilgan) uchun tarix yozuvi.
+
+    Oldin bunday tarjimalar \U0001f4c2 Tarjimalarim ga tushmasdi va natijani qayta olish
+    imkoni yo'q edi (foydalanuvchi: "bot ishlatish qiyin"). Endi ular ham raqam oladi.
+    """
+    data = _data()
+    data["seq"] = int(data.get("seq", 0)) + 1
+    ref = f"M-{data['seq']:04d}"
+    orders = data.setdefault("orders", {})
+    orders[ref] = {"ref": ref, "uid": user.id, "who": user.full_name or str(user.id),
+                   "username": user.username or "", "title": "", "chapter": "", "src": "",
+                   "tgt": "uz", "files": files, "note": "", "kind": kind, "quick": True,
+                   "created": int(time.time()), "status": ST_QUEUED}
+    if len(orders) > 1000:
+        for old in sorted(orders, key=lambda r: orders[r]["created"])[:len(orders) - 1000]:
+            orders.pop(old, None)
+    _save(data)
+    return ref
+
+
+async def show_mine(update: Update, context, edit=False, page: int = 0) -> None:
+    uid = update.effective_user.id
+    orders = user_orders(uid)
     if not orders:
-        await _reply(update, "📂 <b>Buyurtmalarim</b>\n\nHali buyurtma yo‘q.",
-                     InlineKeyboardMarkup([[_ib(BTN_ORDER, "sh:order")]]), edit)
+        await _reply(update, "\U0001f4c2 <b>Tarjimalarim</b>\n\nHali tarjima yo\u2018q. "
+                     f"Bobni yuboring yoki <b>{BTN_ORDER}</b> ni bosing.",
+                     InlineKeyboardMarkup([[_ib(BTN_ORDER, "sh:order")], _home_row()]), edit)
         return
+    pages = max(1, (len(orders) + PAGE - 1) // PAGE)
+    page = max(0, min(page, pages - 1))
+    chunk = orders[page * PAGE:(page + 1) * PAGE]
     lines, rows = [], []
-    for o in orders:
-        kind = {"bepul": "🎁 bepul", "obuna": "💳 obuna", "paket": "💰 paket",
-                "admin": "👑 admin"}.get(o["kind"], o["kind"])
-        lines.append(f"{ST_ICON.get(o['status'], '•')} <b>{o['ref']}</b> - {html.escape(o['title'])}, "
-                     f"{html.escape(o['chapter'])}\n    {_date(o['created'])} · "
-                     f"{LANG_NAME.get(o['src'], o['src'])} → {LANG_NAME.get(o['tgt'], o['tgt'])} · "
-                     f"{kind} · <i>{o['status']}</i>")
-        if o["status"] == ST_QUEUED:
-            rows.append([_ib(f"❌ {o['ref']} ni bekor qilish", f"sh:ucancel:{o['ref']}")])
-    await _reply(update, "📂 <b>Buyurtmalarim</b> (oxirgi 10 ta)\n\n" + "\n\n".join(lines) +
-                 "\n\nYetkazilgan fayllar shu chatda, buyurtma raqami bilan.",
-                 InlineKeyboardMarkup(rows) if rows else None, edit)
+    for o in chunk:
+        lines.append(f"{ST_ICON.get(o['status'], '\u2022')} <b>{o['ref']}</b> \u00b7 "
+                     f"{html.escape(_label(o))}\n    {_date(o['created'])} \u00b7 "
+                     f"{len(o.get('files') or [])} fayl \u00b7 <i>{o['status']}</i>")
+        rows.append([_ib(f"{ST_ICON.get(o['status'], '\u2022')} {o['ref']} \u00b7 {_label(o)}"[:60],
+                         f"sh:ord:{o['ref']}")])
+    nav = []
+    if page:
+        nav.append(_ib("\u25c0\ufe0f", f"sh:mine:{page - 1}"))
+    if page < pages - 1:
+        nav.append(_ib("\u25b6\ufe0f", f"sh:mine:{page + 1}"))
+    if nav:
+        rows.append(nav)
+    rows.append([_ib(BTN_ORDER, "sh:order")])
+    rows.append(_home_row())
+    await _reply(update, f"\U0001f4c2 <b>Tarjimalarim</b> ({page + 1}/{pages}, jami {len(orders)})\n\n"
+                 + "\n\n".join(lines) + "\n\nBatafsil ko\u2018rish uchun bobni tanlang \U0001f447",
+                 InlineKeyboardMarkup(rows), edit)
 
 
-# ------------------------------------------------------------------ buyurtma oqimi
+async def show_order(update: Update, context, ref: str) -> None:
+    """Bitta bob: holati va amallari (natijani olish / holat / qayta urinish / muammo)."""
+    uid = update.effective_user.id
+    o = get_order(ref)
+    if not o or (o["uid"] != uid and not admins.is_superadmin(uid)):
+        await _reply(update, "Bu bob topilmadi.", InlineKeyboardMarkup(
+            [[_ib(BTN_MINE, "sh:mine")], _home_row()]), edit=True)
+        return
+    kind = {"bepul": "\U0001f381 bepul bob", "obuna": "\U0001f4b3 obuna", "paket": "\U0001f4b0 paket",
+            "admin": "\U0001f451 admin"}.get(o["kind"], o["kind"])
+    text = (f"\U0001f9fe <b>{o['ref']}</b> \u00b7 {ST_ICON.get(o['status'], '')} <b>{o['status']}</b>\n\n"
+            f"\U0001f4dd Nom: {html.escape(_label(o))}\n"
+            f"\U0001f4c4 Fayllar: {len(o.get('files') or [])} ta ({_files_summary(o.get('files') or [])})\n"
+            f"\U0001f310 Tarjima: o\u2018zbekchaga \u00b7 {kind}\n"
+            f"\U0001f552 Yuborilgan: {_date(o['created'])}"
+            + (f"\n\u2705 Yetkazilgan: {_date(o['delivered'])}" if o.get("delivered") else ""))
+    rows = []
+    if o.get("result"):
+        text += "\n\n\U0001f4e5 Natija saqlangan - qayta yuborish bepul (hisobdan yechilmaydi)."
+        rows.append([_ib("\U0001f4e5 Natijani qayta yuborish", f"sh:res:{o['ref']}")])
+    if o["status"] in (ST_QUEUED, ST_WORK):
+        text += ("\n\n\u23f3 Hozir navbatda/ishlanmoqda - holat alohida xabarda yangilanib turadi."
+                 if o["status"] == ST_QUEUED else "\n\n\u2699\ufe0f Tarjima qilinmoqda.")
+    if o["status"] == ST_QUEUED:
+        rows.append([_ib("\u274c Bekor qilish", f"sh:ucancel:{o['ref']}")])
+    if o["status"] in (ST_FAIL, ST_CANCEL) and not o.get("result"):
+        text += "\n\n\u26a0\ufe0f Bu bob yetkazilmadi - hisobdan yechilmagan (qaytarilgan)."
+        rows.append([_ib("\U0001f501 Qayta urinish", f"sh:retry:{o['ref']}")])
+    rows.append([_ib("\u26a0\ufe0f Muammo bildirish", "m:do:feedback")])
+    rows.append([_ib(TXT_BACK, "sh:mine"), _ib(TXT_HOME, "sh:home")])
+    await _reply(update, text, InlineKeyboardMarkup(rows), edit=True)
+
+
+async def resend_result(update: Update, context, ref: str) -> None:
+    """Saqlangan natijani qayta yuboradi - tarjima qayta ishlamaydi, hisob o'zgarmaydi."""
+    uid = update.effective_user.id
+    o = get_order(ref)
+    if not o or (o["uid"] != uid and not admins.is_superadmin(uid)) or not o.get("result"):
+        await update.effective_message.reply_text("Saqlangan natija topilmadi.")
+        return
+    res = o["result"]
+    caption = (res.get("caption") or f"\U0001f9fe {ref}") + "\n\n(saqlangan natija - hisobdan yechilmadi)"
+    try:
+        if res.get("kind") == "photo":
+            await context.bot.send_photo(uid, res["id"], caption=caption[:1000])
+        else:
+            await context.bot.send_document(uid, res["id"], caption=caption[:1000])
+    except TelegramError as exc:
+        logger.warning("Natija qayta yuborilmadi (%s): %s", ref, exc)
+        await update.effective_message.reply_text(
+            "Natijani qayta yuborib bo\u2018lmadi (fayl Telegram xotirasidan o\u2018chgan bo\u2018lishi mumkin). "
+            "\U0001f501 Qayta urinish orqali yangidan tarjima qilsa bo\u2018ladi.")
+
+
+async def user_retry(update: Update, context, ref: str) -> None:
+    """Xato bilan tugagan bobni qayta navbatga qo'yadi (hisobdan yangidan yechiladi)."""
+    uid = update.effective_user.id
+    o = get_order(ref)
+    if not o or o["uid"] != uid or o["status"] not in (ST_FAIL, ST_CANCEL):
+        await update.effective_message.reply_text("Bu bobni qayta ishga tushirib bo\u2018lmadi.")
+        return
+    if any(j.get("order") == ref for j in list(B._waiting) + list(B._active)):
+        await update.effective_message.reply_text("Bu bob allaqachon navbatda \u23f3")
+        return
+    if admins.daily_blocked(uid):
+        await _reply(update, B.daily_limit_text(), InlineKeyboardMarkup([_home_row()]), edit=True)
+        return
+    kind = _charge_kind(uid)
+    if kind is None:
+        await _reply(update, "Hisobingizda bob qolmadi - qayta urinish uchun paket kerak.",
+                     InlineKeyboardMarkup([[_ib("\U0001f4b0 Paket olish", "sh:pay")],
+                                           [_ib("\u270d\ufe0f Admin bilan bog\u2018lanish", "sh:contact")],
+                                           _home_row()]), edit=True)
+        return
+    charged = kind == "bepul"
+    bal = kind == "paket"
+    if charged:
+        admins.add_used(uid)
+    elif bal:
+        admins.add_balance(uid, -1)
+    daily = bool(admins.DAILY_LIMIT) and not admins.is_admin(uid)
+    if daily:
+        admins.add_daily(uid)
+    _set_order(ref, status=ST_QUEUED, kind=kind)
+    _log(uid, "qayta urindi", ref)
+    await _reply(update, f"\U0001f501 {ref} qayta navbatga qo\u2018yildi.", None, edit=True)
+    await enqueue_order(context, get_order(ref), charged, daily, bal)
+
+
+# ------------------------------------------------------------------ yuklash seansi
+# Bitta seans = bitta bob. Fayllar (rasm/albom/PDF/ZIP) yig'iladi, holat BITTA xabarda
+# yangilanadi, so'ng 🚀 Tarjima qilish. Hech qanday nom/til/izoh so'ralmaydi:
+# tarjima dvigateli ularni ishlatmaydi (nom - ixtiyoriy, faqat tarix uchun).
 def _draft(uid: int) -> dict | None:
     return _data().get("drafts", {}).get(str(uid))
 
@@ -299,125 +469,139 @@ def _put_draft(uid: int, draft: dict | None) -> None:
     _save(data)
 
 
-CANCEL_ROW = [_ib("❌ Bekor qilish", "sh:cancel")]
+CANCEL_ROW = [_ib(TXT_CANCEL, "sh:cancel")]
+
+
+def _files_summary(files: list) -> str:
+    pdfs = sum(1 for f in files if f["kind"] == "pdf")
+    zips = sum(1 for f in files if f["kind"] == "zip")
+    imgs = len(files) - pdfs - zips
+    parts = (([f"{imgs} rasm"] if imgs else []) + ([f"{pdfs} PDF"] if pdfs else [])
+             + ([f"{zips} ZIP"] if zips else []))
+    return ", ".join(parts)
+
+
+def _charge_kind(uid: int) -> str | None:
+    """Bu bob nima hisobidan ketadi: 'admin' | 'obuna' | 'bepul' | 'paket' | None (mablag' yo'q).
+
+    Tartib eski qoidalar bilan bir xil: admin va obunachi cheklanmaydi, keyin bepul bob,
+    keyin paket balansi. Hech biri bo'lmasa - None (tarjima boshlanmaydi).
+    """
+    if admins.is_admin(uid):
+        return "admin"
+    if admins.is_paid(uid):
+        return "obuna"
+    if admins.free_left(uid) > 0:
+        return "bepul"
+    if admins.PACKS_ON and admins.balance(uid) > 0:
+        return "paket"
+    if not admins.FREE_CHAPTERS and not admins.PACKS_ON:
+        return "admin"                       # cheklovsiz bot (boshqa botlar)
+    return None
+
+
+def _charge_line(uid: int) -> str:
+    kind = _charge_kind(uid)
+    if kind in ("admin", "obuna"):
+        return "cheklov yo\u2018q"
+    if kind == "bepul":
+        return f"bepul bobingiz ishlatiladi ({admins.free_left(uid)} ta qoldi)"
+    if kind == "paket":
+        return f"balansdan ({admins.balance(uid)} ta bor \u2192 {admins.balance(uid) - 1} ta qoladi)"
+    return "\u26a0\ufe0f hisobingizda bob qolmadi"
+
+
+def _panel_text(uid: int, draft: dict) -> str:
+    if not draft["files"]:
+        return ("\U0001f4d6 <b>Yangi bob</b>\n\n"
+                "Sahifalarni yuboring: <b>PDF</b>, <b>ZIP/CBZ</b> yoki rasmlar (albom ham bo\u2018ladi) - "
+                "tartib yuborilgan tartibda saqlanadi.\n\n" + _limits_text(uid)
+                + "\n\nHammasini yuborib bo\u2018lgach - <b>\U0001f680 Tarjima qilish</b>.")
+    lines = [f"\U0001f4e5 Yuklandi: <b>{len(draft['files'])} ta fayl</b> ({_files_summary(draft['files'])})",
+             "\U0001f310 Tarjima: <b>o\u2018zbekchaga</b>",
+             f"\U0001f4b0 Hisobdan: <b>1 bob</b> - {_charge_line(uid)}"]
+    if draft.get("title"):
+        lines.append(f"\U0001f4dd Nom: <b>{html.escape(draft['title'])}</b>")
+    return ("\n".join(lines) + "\n\nYana yuborsangiz shu bobga qo\u2018shiladi. "
+            "Tayyor bo\u2018lsangiz - <b>\U0001f680 Tarjima qilish</b>.")
+
+
+def _panel_markup(draft: dict) -> InlineKeyboardMarkup:
+    rows = []
+    if draft["files"]:
+        rows.append([_ib("\U0001f680 Tarjima qilish", f"sh:go:{draft['nonce']}")])
+        rows.append([_ib("\U0001f440 Fayllarni ko\u2018rish", "sh:uplist"),
+                     _ib("\U0001f5d1 Oxirgisini olib tashlash", "sh:uppop")])
+    rows.append([_ib("\u270f\ufe0f Nom berish", "sh:name"), _ib(TXT_CANCEL, "sh:cancel")])
+    rows.append(_home_row())
+    return InlineKeyboardMarkup(rows)
+
+
+async def _show_panel(update: Update, context, draft: dict, edit: bool = False) -> None:
+    """Seansning BITTA holat xabari: bor bo'lsa tahrirlanadi (chat to'lib ketmasin)."""
+    uid = update.effective_user.id
+    text, markup = _panel_text(uid, draft), _panel_markup(draft)
+    panel = draft.get("panel")
+    q = update.callback_query
+    if edit and q is not None:
+        try:
+            await q.edit_message_text(text, parse_mode="HTML", reply_markup=markup)
+            draft["panel"] = q.message.message_id
+            _put_draft(uid, draft)
+            return
+        except TelegramError:
+            pass
+    if panel:
+        try:
+            await context.bot.edit_message_text(text, chat_id=uid, message_id=panel,
+                                                parse_mode="HTML", reply_markup=markup)
+            return
+        except TelegramError:
+            pass
+    sent = await update.effective_message.reply_text(text, parse_mode="HTML", reply_markup=markup)
+    draft["panel"] = sent.message_id
+    _put_draft(uid, draft)
 
 
 async def order_start(update: Update, context, title: str | None = None) -> None:
     uid = update.effective_user.id
-    if trial_state(uid) == "ishlatilgan":
-        await show_free(update, context)
-        return
-    if trial_state(uid) == "band":
-        await update.effective_message.reply_text(
-            "⏳ Bepul bobingiz hozirgi buyurtmada ishlatilmoqda - u tugagach yana buyurtma qila olasiz.")
-        return
     old = _draft(uid)
-    if old and old.get("files") and title is None:
+    if old and old.get("files") and title is None:        # tugallanmagan seans - davom etish/tashlash
         await update.effective_message.reply_text(
-            f"📝 Tugallanmagan buyurtmangiz bor: <b>{html.escape(old.get('title') or '-')}</b>, "
-            f"{len(old['files'])} ta fayl. Davom ettirasizmi?", parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup([[_ib("▶️ Davom ettirish", "sh:resume")],
-                                               [_ib("🆕 Yangidan boshlash", "sh:new")]]))
+            f"\U0001f4dd Tugallanmagan bobingiz bor: <b>{len(old['files'])} ta fayl</b> "
+            f"({_files_summary(old['files'])}). Davom ettirasizmi?", parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup([[_ib("\u25b6\ufe0f Davom ettirish", "sh:resume")],
+                                               [_ib("\U0001f195 Yangidan boshlash", "sh:new")],
+                                               _home_row()]))
         return
-    await _begin(update, uid, title)
+    await _begin(update, context, uid, title)
 
 
-async def _begin(update: Update, uid: int, title: str | None) -> None:
-    draft = {"step": "chapter" if title else "title", "title": title or "", "chapter": "",
-             "src": "", "tgt": "uz", "files": [], "note": "", "nonce": secrets.token_hex(4)}
+async def _begin(update: Update, context, uid: int, title: str | None = None) -> None:
+    draft = {"step": "upload", "title": title or "", "chapter": "", "src": "", "tgt": "uz",
+             "files": [], "note": "", "nonce": secrets.token_hex(4), "panel": 0}
     _put_draft(uid, draft)
-    if title:
-        await update.effective_message.reply_text(
-            f"📚 <b>{html.escape(title)}</b> - keyingi bob.\n\n2/6 · Bob raqami yoki nomini yozing:",
-            parse_mode="HTML", reply_markup=InlineKeyboardMarkup([CANCEL_ROW]))
-    else:
-        await update.effective_message.reply_text(
-            "📖 <b>Yangi buyurtma</b>\n\n1/6 · Manhwa nomini yozing:", parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup([CANCEL_ROW]))
-
-
-async def _ask_step(update: Update, draft: dict, edit: bool = False) -> None:
-    step = draft["step"]
-    if step == "title":
-        await _reply(update, "1/6 · Manhwa nomini yozing:", InlineKeyboardMarkup([CANCEL_ROW]), edit)
-    elif step == "chapter":
-        await _reply(update, "2/6 · Bob raqami yoki nomini yozing (masalan: <b>35</b>):",
-                     InlineKeyboardMarkup([[_ib("⬅️ Orqaga", "sh:back")], CANCEL_ROW]), edit)
-    elif step == "src":
-        rows = [[_ib(n, f"sh:src:{c}")] for c, n in SRC_LANGS]
-        await _reply(update, "3/6 · Asl til qaysi?", InlineKeyboardMarkup(
-            rows + [[_ib("⬅️ Orqaga", "sh:back")], CANCEL_ROW]), edit)
-    elif step == "tgt":
-        rows = [[_ib(n, f"sh:tgt:{c}")] for c, n in TGT_LANGS]
-        await _reply(update, "4/6 · Qaysi tilga tarjima qilinsin?", InlineKeyboardMarkup(
-            rows + [[_ib("⬅️ Orqaga", "sh:back")], CANCEL_ROW]), edit)
-    elif step == "upload":
-        await _reply(update, "5/6 · <b>Bob sahifalarini yuboring</b> - PDF, ZIP yoki rasmlar (albom ham bo‘ladi).\n\n"
-                     + _limits_text(update.effective_user.id) + "\n\nHammasini yuborib bo‘lgach <b>✅ Yuklash tugadi</b> ni bosing.",
-                     _upload_markup(draft), edit)
-    elif step == "note":
-        await _reply(update, "6/6 · Qo‘shimcha ko‘rsatma bormi? (masalan: <i>ismlarni o‘zgartirmang</i>)\n"
-                     "Yozing yoki o‘tkazib yuboring:",
-                     InlineKeyboardMarkup([[_ib("⏭ O‘tkazib yuborish", "sh:nonote")],
-                                           [_ib("⬅️ Orqaga", "sh:back")], CANCEL_ROW]), edit)
-    elif step == "confirm":
-        await _reply(update, _summary(update.effective_user.id, draft), InlineKeyboardMarkup([
-            [_ib("✅ Tasdiqlash", f"sh:confirm:{draft['nonce']}")],
-            [_ib("⬅️ Orqaga", "sh:back"), _ib("❌ Bekor qilish", "sh:cancel")]]), edit)
-
-
-def _upload_markup(draft: dict) -> InlineKeyboardMarkup:
-    rows = []
-    if draft["files"]:
-        rows.append([_ib(f"✅ Yuklash tugadi ({len(draft['files'])} ta fayl)", "sh:updone")])
-        rows.append([_ib("🗑 Oxirgisini o‘chirish", "sh:uppop"), _ib("🔄 Qaytadan", "sh:upreset")])
-        rows.append([_ib("📋 Tartibni ko‘rish", "sh:uplist")])
-    rows.append([_ib("⬅️ Orqaga", "sh:back"), _ib("❌ Bekor qilish", "sh:cancel")])
-    return InlineKeyboardMarkup(rows)
-
-
-def _summary(uid: int, d: dict) -> str:
-    st = trial_state(uid)
-    kind = {"mavjud": "🎁 <b>bepul</b> (bepul bobingiz ishlatiladi)",
-            "cheksiz": "💳 obuna / admin - cheklovsiz"}.get(st, "admin bilan kelishuv kerak")
-    pdfs = sum(1 for f in d["files"] if f["kind"] == "pdf")
-    zips = sum(1 for f in d["files"] if f["kind"] == "zip")
-    imgs = len(d["files"]) - pdfs - zips
-    parts = (([f"{pdfs} ta PDF"] if pdfs else []) + ([f"{zips} ta ZIP"] if zips else [])
-             + ([f"{imgs} ta rasm"] if imgs else []))
-    return ("🧾 <b>Buyurtmani tekshiring</b>\n\n"
-            f"📚 Manhwa: <b>{html.escape(d['title'])}</b>\n"
-            f"🔢 Bob: <b>{html.escape(d['chapter'])}</b>\n"
-            f"🌐 Til: {LANG_NAME.get(d['src'], d['src'])} → {LANG_NAME.get(d['tgt'], d['tgt'])}\n"
-            f"📄 Sahifalar: {', '.join(parts)} (tartib - yuborilgan tartibda)\n"
-            f"📦 Natija: bitta PDF (tarjima qilingan sahifalar)\n"
-            f"✍️ Izoh: {html.escape(d['note']) if d['note'] else '-'}\n"
-            f"💰 Turi: {kind}")
-
-
-_PREV = {"chapter": "title", "src": "chapter", "tgt": "src", "upload": "tgt", "note": "upload", "confirm": "note"}
+    context.user_data.pop("await_name", None)
+    await _show_panel(update, context, draft)
 
 
 async def on_text(update: Update, context) -> bool:
-    """Menyu tugmalari va buyurtma bosqichlaridagi matn. True - qabul qilindi."""
+    """Menyu tugmalari va seans matni. True - qabul qilindi."""
     msg = update.effective_message
     uid = update.effective_user.id
     text = (msg.text or "").strip()
     if text in MENU_BUTTONS:
         admins.remember_user(update.effective_user)
-        if text == BTN_ORDER:
+        btn = LEGACY_BUTTONS.get(text, text)
+        if btn == BTN_ORDER:
             await order_start(update, context)
-        elif text == BTN_FREE:
-            await show_free(update, context)
-        elif text == BTN_MINE:
+        elif btn == BTN_MINE:
             await show_mine(update, context)
-        elif text == BTN_PRICE:
-            await show_price(update, context)
-        elif text == BTN_CONTACT:
-            await show_contact(update, context)
-        elif text == BTN_HELP:
+        elif btn == BTN_PAY:
+            await show_pay(update, context)
+        elif btn == BTN_HELP:
             await show_help(update, context)
-        elif text == BTN_ADMIN:
+        elif btn == BTN_ADMIN:
             await admin_panel(update, context)
         return True
     if context.user_data.get("await_inq"):
@@ -427,41 +611,40 @@ async def on_text(update: Update, context) -> bool:
     if context.user_data.get("await_adm"):
         return await _admin_text(update, context, text)
     draft = _draft(uid)
-    if not draft or not text:
-        return False
-    step = draft["step"]
-    if step == "title":
-        draft["title"], draft["step"] = text[:120], "chapter"
-    elif step == "chapter":
-        draft["chapter"], draft["step"] = text[:60], "src"
-    elif step == "note":
-        draft["note"], draft["step"] = text[:500], "confirm"
-    elif step == "upload":
-        await msg.reply_text("Bu bosqichda sahifalarni (PDF yoki rasm) yuboring, so‘ng "
-                             "<b>✅ Yuklash tugadi</b> ni bosing.", parse_mode="HTML",
-                             reply_markup=_upload_markup(draft))
+    if context.user_data.pop("await_name", False) and draft:
+        draft["title"] = text[:120]
+        _put_draft(uid, draft)
+        await msg.reply_text(f"\U0001f4dd Nom saqlandi: <b>{html.escape(draft['title'])}</b>",
+                             parse_mode="HTML")
+        await _show_panel(update, context, draft)
         return True
-    else:
-        return False
-    _put_draft(uid, draft)
-    await _ask_step(update, draft)
-    return True
+    if draft and text:
+        await msg.reply_text(
+            "Shu yerga <b>fayl</b> yuboring (PDF, ZIP yoki rasm). Yozuvni nom qilib saqlash uchun "
+            "<b>\u270f\ufe0f Nom berish</b> ni bosing.", parse_mode="HTML")
+        await _show_panel(update, context, draft)
+        return True
+    return False
 
 
 async def on_file(update: Update, context) -> bool:
-    """Buyurtmaning 'sahifalar' bosqichida kelgan fayl. True - qabul qilindi (navbatga emas)."""
+    """Seans ochiq bo'lsa - fayl bobga qo'shiladi. True - navbatga qo'yilmaydi."""
     uid = update.effective_user.id
     draft = _draft(uid)
     if not draft or draft.get("step") != "upload":
-        return False
+        return False                       # seans yo'q - tezkor yo'l (bot.handle_photo) ishlaydi
     msg = update.effective_message
+    if context.user_data.pop("await_name", False):
+        await msg.reply_text("Nom berishni to\u2018xtatdim - faylni qabul qildim.")
     item = msg.photo[-1] if msg.photo else msg.document
     size = getattr(item, "file_size", 0) or 0
     if size > B.max_upload_bytes(uid):
-        await msg.reply_text(B.too_big_text(uid, size) + "\nOldin yuborilganlari saqlandi.")
+        await msg.reply_text(B.too_big_text(uid, size)
+                             + "\n\nOldin yuborilgan fayllar saqlanib turibdi.")
         return True
     if len(draft["files"]) >= MAX_FILES:
-        await msg.reply_text(f"⚠️ Bir buyurtmada eng ko‘pi {MAX_FILES} ta fayl.")
+        await msg.reply_text(f"\u26a0\ufe0f Bitta bobda eng ko\u2018pi {MAX_FILES} ta fayl. "
+                             "Qolganini keyingi bob qilib yuboring.")
         return True
     name = getattr(msg.document, "file_name", None) if msg.document else None
     mime = (getattr(msg.document, "mime_type", "") or "").lower() if msg.document else ""
@@ -472,19 +655,7 @@ async def on_file(update: Update, context) -> bool:
                            "kind": kind, "name": name or ""})
     draft["files"].sort(key=lambda f: f["mid"])          # albom aralash kelsa ham tartib saqlanadi
     _put_draft(uid, draft)
-    # Bitta holat xabari yangilanadi (har faylga yangi xabar - chat to'lib ketardi)
-    panel = context.user_data.get("up_panel")
-    text = (f"📥 Qabul qilindi: <b>{len(draft['files'])} ta fayl</b>\n"
-            "Yana yuborishingiz mumkin yoki <b>✅ Yuklash tugadi</b> ni bosing.")
-    try:
-        if panel:
-            await context.bot.edit_message_text(text, chat_id=uid, message_id=panel, parse_mode="HTML",
-                                                reply_markup=_upload_markup(draft))
-            return True
-    except TelegramError:
-        pass
-    sent = await msg.reply_text(text, parse_mode="HTML", reply_markup=_upload_markup(draft))
-    context.user_data["up_panel"] = sent.message_id
+    await _show_panel(update, context, draft)
     return True
 
 
@@ -497,22 +668,40 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await q.answer()
     except TelegramError:
         pass
+    if act == "home":
+        await start(update, context)                      # seans o'chmaydi
+        return
     if act == "order":
         await order_start(update, context)
         return
-    if act == "price":
-        await show_price(update, context, edit=True)
+    if act in ("pay", "price", "free"):
+        await show_pay(update, context, edit=True)
+        return
+    if act == "help":
+        await show_help(update, context, edit=True)
+        return
+    if act == "contact":
+        await show_contact(update, context, edit=True)
+        return
+    if act == "mine":
+        await show_mine(update, context, edit=True, page=int(parts[2]) if len(parts) > 2 else 0)
+        return
+    if act == "ord":
+        await show_order(update, context, parts[2])
+        return
+    if act == "res":
+        await resend_result(update, context, parts[2])
+        return
+    if act == "retry":
+        await user_retry(update, context, parts[2])
         return
     if act == "inq":
         context.user_data["await_inq"] = True
         await update.effective_message.reply_text(
-            "📝 Buyurtma tafsilotlarini bitta xabarda yozing:\n\n"
-            "• Manhwa nomi\n• Boblar (masalan: 35-40)\n• Taxminiy sahifalar soni\n• Til\n"
-            "• Muddat (ixtiyoriy)\n\nBekor qilish: /start")
+            "\U0001f4dd So\u2018rovingizni bitta xabarda yozing (nima kerak, qancha bob, qachon):")
         return
-    if act == "next":                                     # 📚 Keyingi bobga buyurtma
-        o = get_order(parts[2]) if len(parts) > 2 else None
-        await order_start(update, context, title=o["title"] if o and o["uid"] == uid else None)
+    if act == "next":                                     # \U0001f4da Yana tarjima qilish
+        await order_start(update, context)
         return
     if act == "rate":
         if len(parts) > 3:
@@ -520,17 +709,18 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             if o and o["uid"] == uid:
                 _set_order(parts[2], rating=int(parts[3]))
                 try:
-                    await context.bot.send_message(B.OWNER_ID, f"⭐ Baho: {'⭐' * int(parts[3])} - {parts[2]} "
-                                                               f"({o['title']}, {o['chapter']})")
+                    await context.bot.send_message(B.OWNER_ID, f"\u2b50 Baho: {'\u2b50' * int(parts[3])} - "
+                                                               f"{parts[2]} ({_label(o)})")
                 except TelegramError:
                     pass
             await q.edit_message_reply_markup(InlineKeyboardMarkup([[
-                _ib("✏️ Xato haqida yozish", "m:do:feedback"), _ib("📚 Keyingi bob", f"sh:next:{parts[2]}")]]))
-            await update.effective_message.reply_text("Rahmat! Bahoingiz qabul qilindi 🙏")
+                _ib("\u26a0\ufe0f Muammo bildirish", "m:do:feedback"),
+                _ib("\U0001f4d6 Yana tarjima qilish", "sh:order")]]))
+            await update.effective_message.reply_text("Rahmat! Bahoingiz qabul qilindi \U0001f64f")
         else:
             await q.edit_message_reply_markup(InlineKeyboardMarkup(
-                [[_ib("⭐" * n, f"sh:rate:{parts[2]}:{n}") for n in (1, 2, 3)],
-                 [_ib("⭐" * n, f"sh:rate:{parts[2]}:{n}") for n in (4, 5)]]))
+                [[_ib("\u2b50" * n, f"sh:rate:{parts[2]}:{n}") for n in (1, 2, 3)],
+                 [_ib("\u2b50" * n, f"sh:rate:{parts[2]}:{n}") for n in (4, 5)]]))
         return
     if act == "ucancel":
         await _user_cancel(update, context, parts[2])
@@ -539,109 +729,112 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await admin_button(update, context, parts)
         return
 
-    draft = _draft(uid)
+    # --- seans amallari
     if act == "new":
-        await _begin(update, uid, None)
+        await _begin(update, context, uid, None)
         return
+    draft = _draft(uid)
     if draft is None:
-        await _reply(update, "Bu buyurtma eskirgan. Yangisini boshlang 👇",
-                     InlineKeyboardMarkup([[_ib(BTN_ORDER, "sh:order")]]), edit=True)
+        await _reply(update, "Bu tugma eskirgan - seans tugagan. Yangi bobni boshlang \U0001f447",
+                     InlineKeyboardMarkup([[_ib(BTN_ORDER, "sh:order")], _home_row()]), edit=True)
         return
     if act == "resume":
-        await _ask_step(update, draft)
+        await _show_panel(update, context, draft, edit=True)
+        return
+    if act == "name":
+        context.user_data["await_name"] = True
+        await update.effective_message.reply_text(
+            "\u270f\ufe0f Bobga nom yozing (ixtiyoriy - faqat \U0001f4c2 Tarjimalarim uchun). "
+            "Masalan: <i>Solo Leveling 35</i>", parse_mode="HTML")
         return
     if act == "cancel":
-        _put_draft(uid, None)
-        context.user_data.pop("up_panel", None)
-        await _reply(update, "❌ Buyurtma bekor qilindi.", None, edit=True)
-        return
-    if act == "back":
-        draft["step"] = _PREV.get(draft["step"], "title")
-    elif act == "src" and draft["step"] == "src":
-        draft["src"], draft["step"] = parts[2], "tgt"
-    elif act == "tgt" and draft["step"] == "tgt":
-        draft["tgt"], draft["step"] = parts[2], "upload"
-        context.user_data.pop("up_panel", None)
-    elif act == "updone" and draft["step"] == "upload":
         if not draft["files"]:
+            _put_draft(uid, None)
+            await _reply(update, "\u274c Bekor qilindi.", InlineKeyboardMarkup(
+                [[_ib(BTN_ORDER, "sh:order")], _home_row()]), edit=True)
             return
-        draft["step"] = "note"
-        context.user_data.pop("up_panel", None)
-    elif act == "uppop" and draft["files"]:
-        draft["files"].pop()
-    elif act == "upreset":
-        draft["files"] = []
-    elif act == "uplist":
-        lines = [f"{i}. {'📄 PDF' if f['kind'] == 'pdf' else '🗜 ZIP' if f['kind'] == 'zip' else '🖼 rasm'} {html.escape(f['name'])} "
-                 f"({f['size'] / 2**20:.1f} MB)" for i, f in enumerate(draft["files"], 1)]
-        await update.effective_message.reply_text("📋 <b>Yuborilgan tartib:</b>\n" + "\n".join(lines),
-                                                  parse_mode="HTML")
+        await _reply(update, f"\u274c Bekor qilsam, yuborgan <b>{len(draft['files'])} ta faylingiz</b> "
+                     "o\u2018chadi (tarjima qilinmaydi, hisobdan hech narsa yechilmaydi).",
+                     InlineKeyboardMarkup([[_ib("\U0001f5d1 Ha, bekor qilinsin", "sh:cancelyes")],
+                                           [_ib("\u2b05\ufe0f Yo\u2018q, davom etaman", "sh:resume")]]), edit=True)
         return
-    elif act == "nonote" and draft["step"] == "note":
-        draft["note"], draft["step"] = "", "confirm"
-    elif act == "confirm":
-        await _confirm(update, context, draft, parts[2] if len(parts) > 2 else "")
+    if act == "cancelyes":
+        _put_draft(uid, None)
+        await _reply(update, "\u274c Bekor qilindi, fayllar o\u2018chirildi.", InlineKeyboardMarkup(
+            [[_ib(BTN_ORDER, "sh:order")], _home_row()]), edit=True)
         return
-    else:
+    if act == "uplist":
+        lines = [f"{i}. {'\U0001f4c4 PDF' if f['kind'] == 'pdf' else '\U0001f5dc ZIP' if f['kind'] == 'zip' else '\U0001f5bc rasm'} "
+                 f"{html.escape(f['name']) or '-'} ({f['size'] / 2**20:.1f} MB)"
+                 for i, f in enumerate(draft["files"], 1)]
+        await update.effective_message.reply_text(
+            "\U0001f440 <b>Shu bobdagi fayllar</b> (tarjima shu tartibda bo\u2018ladi):\n"
+            + "\n".join(lines) + "\n\nTartib noto\u2018g\u2018ri bo\u2018lsa - oxirgilarini olib tashlab, "
+            "kerakli tartibda qayta yuboring.", parse_mode="HTML")
         return
-    _put_draft(uid, draft)
-    await _ask_step(update, draft, edit=True)
+    if act == "uppop" and draft["files"]:
+        gone = draft["files"].pop()
+        _put_draft(uid, draft)
+        await update.effective_message.reply_text(
+            f"\U0001f5d1 Olib tashlandi: {html.escape(gone['name']) or 'oxirgi fayl'}")
+        await _show_panel(update, context, draft, edit=True)
+        return
+    if act == "go":
+        await _start_job(update, context, draft, parts[2] if len(parts) > 2 else "")
+        return
 
 
-async def _confirm(update: Update, context, draft: dict, nonce: str) -> None:
+async def _start_job(update: Update, context, draft: dict, nonce: str) -> None:
+    """\U0001f680 Tarjima qilish: hisobdan yechib, navbatga qo'yadi (takror bosish ikkinchi ish yaratmaydi)."""
     uid = update.effective_user.id
     q = update.callback_query
-    # Qayta bosish ikkinchi buyurtma yaratmaydi: qoralama shu yerda (await'siz) olib tashlanadi
-    data = _data()
+    data = _data()                       # qoralama await'siz olib tashlanadi - idempotent
     cur = data.get("drafts", {}).get(str(uid))
     if not cur or cur.get("nonce") != nonce:
-        await q.answer("Bu buyurtma allaqachon yuborilgan.", show_alert=False)
+        if q is not None:
+            await q.answer("Bu bob allaqachon yuborilgan.", show_alert=False)
+        return
+    if not cur.get("files"):
+        await _reply(update, "Avval sahifalarni yuboring.", _panel_markup(cur), edit=True)
         return
     if admins.daily_blocked(uid):
-        await _reply(update, B.daily_limit_text(), None, edit=True)
+        await _reply(update, B.daily_limit_text(), InlineKeyboardMarkup([_home_row()]), edit=True)
+        return
+    kind = _charge_kind(uid)
+    if kind is None:                     # mablag' yetmaydi - fayllar SAQLANADI
+        need = ("Bu bob uchun <b>1 bob</b> kerak, hisobingizda esa bob qolmadi.\n\n"
+                f"\U0001f4e5 Yuborgan {len(cur['files'])} ta faylingiz saqlanib turadi - "
+                "paket qo\u2018shilgandan keyin <b>\U0001f680 Tarjima qilish</b> ni bossangiz bo\u2018ldi.")
+        rows = [[_ib("\U0001f4b0 Paket olish", "sh:pay")], [_ib("\u270d\ufe0f Admin bilan bog\u2018lanish", "sh:contact")],
+                [_ib("\U0001f5d1 Fayllarni o\u2018chirish", "sh:cancelyes")], _home_row()]
+        await _reply(update, need, InlineKeyboardMarkup(rows), edit=True)
+        await B._ask_owner_to_pay(context, update.effective_user)
         return
     data["drafts"].pop(str(uid), None)
-    st = trial_state(uid)
-    if st in ("ishlatilgan", "band"):
-        _save(data)
-        await _reply(update, "Bepul bobingizdan foydalandingiz. Keyingi boblarning narxi va tayyor "
-                     "bo‘lish muddatini admin bilan kelishishingiz mumkin.", InlineKeyboardMarkup(
-                         [_contact_button() or [_ib("💰 Narxlar", "sh:price")],
-                          [_ib("📝 Buyurtma tafsilotlarini yuborish", "sh:inq")]]), edit=True)
-        return
-    if admins.is_admin(uid):
-        kind = "admin"
-    elif st == "paket":
-        kind = "paket"
-    elif admins.is_paid(uid):
-        kind = "obuna"
-    else:
-        kind = "bepul"
     data["seq"] = int(data.get("seq", 0)) + 1
     ref = f"M-{data['seq']:04d}"
     order = {"ref": ref, "uid": uid, "who": update.effective_user.full_name or str(uid),
-             "username": update.effective_user.username or "", "title": draft["title"],
-             "chapter": draft["chapter"], "src": draft["src"], "tgt": draft["tgt"],
-             "files": draft["files"], "note": draft["note"], "kind": kind,
-             "created": int(time.time()), "status": ST_QUEUED}
-    data.setdefault("orders", {})[ref] = order
-    orders = data["orders"]
+             "username": update.effective_user.username or "", "title": cur.get("title", ""),
+             "chapter": "", "src": "", "tgt": "uz", "files": cur["files"], "note": "",
+             "kind": kind, "created": int(time.time()), "status": ST_QUEUED}
+    orders = data.setdefault("orders", {})
+    orders[ref] = order
     if len(orders) > 1000:                                 # eng eskilarini tozalash
         for old in sorted(orders, key=lambda r: orders[r]["created"])[:len(orders) - 1000]:
             orders.pop(old, None)
     _save(data)
-    charged = bal = False
-    if kind == "bepul":
-        admins.add_used(uid)                               # Band (yetib bormasa qaytariladi)
-        charged = True
-    elif kind == "paket":
-        admins.add_balance(uid, -1)                        # paket balansidan bitta bob
-        bal = True
+    charged = kind == "bepul"
+    bal = kind == "paket"
+    if charged:
+        admins.add_used(uid)             # yetib bormasa qaytariladi (bot._refund)
+    elif bal:
+        admins.add_balance(uid, -1)
     daily = bool(admins.DAILY_LIMIT) and not admins.is_admin(uid)
     if daily:
         admins.add_daily(uid)
-    await _reply(update, _summary(uid, draft).replace("🧾 <b>Buyurtmani tekshiring</b>",
-                                                      f"✅ <b>Buyurtma qabul qilindi: {ref}</b>"), None, edit=True)
+    await _reply(update, f"\u2705 <b>{ref}</b> qabul qilindi: {len(order['files'])} ta fayl "
+                 f"({_files_summary(order['files'])}).\n\nHolatni shu yerda ko\u2018rsatib turaman.",
+                 None, edit=True)
     await enqueue_order(context, order, charged, daily, bal)
 
 
@@ -653,7 +846,7 @@ async def enqueue_order(context, order: dict, charged: bool, daily: bool = False
                                                 "qabul qilindi ⏳ tarjima tez orada boshlanadi."))
     B._job_counter["n"] += 1
     job = {"update": None, "context": context, "user": order["uid"], "id": B._job_counter["n"],
-           "name": f"{order['title']} {order['chapter']} ({order['ref']})", "who": order["who"],
+           "name": f"{_label(order)} ({order['ref']})", "who": order["who"],
            "cancelled": False, "free": charged, "bal": bal, "daily": daily, "status": status,
            "order": order["ref"]}
     B._waiting.append(job)
@@ -731,7 +924,7 @@ async def process_order(job: dict) -> None:
     if not pages:
         raise RuntimeError("sahifa topilmadi")
     pdf = B.pdf_utils.build_pdf(pages[:B.MAX_PDF_PAGES])
-    name = f"{o['title']} - {o['chapter']}"
+    name = _label(o)
     await B._process_pdf(None, context, pdf, status, chat_id=o["uid"], src_name=name, ref=ref)
 
 
@@ -749,11 +942,10 @@ def finish_order(job: dict) -> None:
 
 
 def after_markup(ref: str | None) -> InlineKeyboardMarkup:
-    """Yetkazilgan natija ostida: baho, xato, keyingi bob."""
-    rows = [[_ib("⭐ Fikr bildirish", f"sh:rate:{ref}")]] if ref else []
-    rows.append([_ib("✏️ Xato haqida yozish", "m:do:feedback")]
-                + ([_ib("📚 Keyingi bobga buyurtma", f"sh:next:{ref}")] if ref else
-                   [_ib("📖 Yangi buyurtma", "sh:order")]))
+    """Yetkazilgan natija ostida: yana tarjima, tarix, muammo, baho."""
+    rows = [[_ib("\u2b50 Fikr bildirish", f"sh:rate:{ref}")]] if ref else []
+    rows.append([_ib("\U0001f4d6 Yana tarjima qilish", "sh:order"), _ib(BTN_MINE, "sh:mine")])
+    rows.append([_ib("\u26a0\ufe0f Muammo bildirish", "m:do:feedback")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -784,6 +976,7 @@ async def admin_panel(update: Update, context, edit=False) -> None:
             [_ib("💰 Paketlar" if admins.PACKS_ON else "📅 Bir oylik", "m:do:paid"),
              _ib("👥 Adminlar", "m:do:admins")],
             [_ib("📝 Qoidalar", "m:qoidalar"), _ib("📜 Jurnal", "sh:alog")],
+            [_ib("⚠️ Xato ishlar", f"sh:aorders:{ST_FAIL}")],
             [_ib("🔄 Yangilash", "sh:apanel")]]
     await _reply(update, text, InlineKeyboardMarkup(rows), edit)
 
@@ -801,7 +994,7 @@ async def admin_button(update: Update, context, parts: list[str]) -> None:
         orders = sorted(_data().get("orders", {}).values(), key=lambda o: -o["created"])
         if flt != "all":
             orders = [o for o in orders if o["status"] == flt]
-        rows = [[_ib(f"{ST_ICON.get(o['status'], '•')} {o['ref']} {o['title'][:18]} {o['chapter'][:8]}",
+        rows = [[_ib(f"{ST_ICON.get(o['status'], '•')} {o['ref']} {_label(o)}"[:60],
                      f"sh:aord:{o['ref']}")] for o in orders[:15]]
         rows.append([_ib("Hammasi", "sh:aorders:all"), _ib("⏳", f"sh:aorders:{ST_QUEUED}"),
                      _ib("⚠️", f"sh:aorders:{ST_FAIL}"), _ib("✅", f"sh:aorders:{ST_DONE}")])
@@ -814,8 +1007,7 @@ async def admin_button(update: Update, context, parts: list[str]) -> None:
             return
         text = (f"🧾 <b>{o['ref']}</b> - {ST_ICON.get(o['status'], '')} {o['status']}\n"
                 f"👤 {html.escape(o['who'])} (@{o.get('username') or '-'}, ID <code>{o['uid']}</code>)\n"
-                f"📚 {html.escape(o['title'])}, {html.escape(o['chapter'])}\n"
-                f"🌐 {LANG_NAME.get(o['src'], o['src'])} → {LANG_NAME.get(o['tgt'], o['tgt'])}\n"
+                f"📚 {html.escape(_label(o))}\n"
                 f"📄 {len(o['files'])} ta fayl · 💰 {o['kind']}\n"
                 f"🕒 {_date(o['created'])}" + (f" · yetkazildi {_date(o['delivered'])}" if o.get("delivered") else "")
                 + (f"\n✍️ {html.escape(o['note'])}" if o.get("note") else "")
@@ -893,7 +1085,7 @@ async def _admin_text(update: Update, context, text: str) -> bool:
                     f"Obuna: {_date(until) + ' gacha' if until else 'yo‘q'}")
         info = (f"👤 <b>{target}</b>\n{_trial_line(target)}\n"
                 f"{pay_line}\n\n<b>Buyurtmalar:</b>\n" +
-                ("\n".join(f"{ST_ICON.get(o['status'], '')} {o['ref']} {html.escape(o['title'])} {html.escape(o['chapter'])}"
+                ("\n".join(f"{ST_ICON.get(o['status'], '')} {o['ref']} {html.escape(_label(o))}"
                            for o in orders) or "yo‘q"))
         rows = [[_ib("🎁 Bepul bobni qaytarish", f"sh:arestore:{target}")]]
         if admins.PACKS_ON:

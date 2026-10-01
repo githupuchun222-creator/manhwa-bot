@@ -260,6 +260,10 @@ async def on_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     parts = query.data.split(":")
     if parts[1] == "qoidalar" and not admins.is_admin(update.effective_user.id):
         parts[1] = "main"
+    # SHOP_UI da bosh menyu BITTA: do'kon ekrani (ikki xil "menyu" chalkashtirmasin)
+    if parts[1] == "main" and shop.ENABLED:
+        await shop.start(update, context)
+        return
     if parts[1] != "do":
         await _show(update, parts[1])
         return
@@ -726,6 +730,22 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
            "name": fname, "who": update.effective_user.full_name or str(user_id),
            "cancelled": False, "free": charged, "bal": bal_charged, "daily": daily,
            "status": await msg.reply_text(text)}
+    # Tezkor yo'l ham tarixga tushadi (\U0001f4c2 Tarjimalarim) va natijasi saqlanadi
+    if shop.ENABLED:
+        okind = ("admin" if admins.is_admin(user_id) else "obuna" if admins.is_paid(user_id)
+                 else "bepul" if charged else "paket" if bal_charged else "admin")
+        item = msg.photo[-1] if msg.photo else msg.document
+        fkind = "pdf" if (msg.document and "pdf" in ((msg.document.mime_type or "") + (msg.document.file_name or "")).lower()) \
+            else "zip" if (msg.document and any(x in ((msg.document.mime_type or "") + (msg.document.file_name or "")).lower()
+                                                for x in ("zip", "cbz"))) else "img"
+        try:
+            job["order"] = shop.quick_record(
+                update.effective_user,
+                [{"id": item.file_id, "mid": msg.message_id, "size": getattr(item, "file_size", 0) or 0,
+                  "kind": fkind, "name": getattr(msg.document, "file_name", "") or ""}], okind)
+            job["quick"] = True
+        except Exception:
+            logger.warning("Tarixga yozilmadi", exc_info=True)
     _waiting.append(job)
     await _queue.put(job)
     logger.info("Navbatga qo'yildi: user=%s, oldinda=%d", user_id, ahead)
@@ -974,10 +994,29 @@ async def paid_list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         reply_markup=InlineKeyboardMarkup(buttons), parse_mode="HTML")
 
 
-def _mark_delivered() -> None:
+def _mark_delivered(sent=None, caption: str = "") -> None:
+    """Natija yetib bordi. Yuborilgan xabar berilsa - natija file_id tarixga saqlanadi:
+    "\U0001f4e5 Natijani qayta yuborish" tarjimani qayta ishlatmaydi va hisobdan yechmaydi."""
     job = _job_var.get() or _current["job"]
-    if job is not None:
-        job["delivered"] = True
+    if job is None:
+        return
+    job["delivered"] = True
+    ref = job.get("order")
+    if sent is None or not ref or not shop.ENABLED:
+        return
+    try:
+        if getattr(sent, "document", None):
+            shop.save_result(ref, sent.document.file_id, "doc", caption)
+        elif getattr(sent, "photo", None):
+            shop.save_result(ref, sent.photo[-1].file_id, "photo", caption)
+    except Exception:
+        logger.warning("Natija saqlanmadi (%s)", ref, exc_info=True)
+
+
+def _fail_note() -> str:
+    """Xato xabarlariga: hisob va fayllar holati (foydalanuvchi nima qilishini bilsin)."""
+    return ("\n\nHisobdan yechilmadi (qaytarildi). Fayllaringiz saqlangan: "
+            "\U0001f4c2 Tarjimalarim \u2192 bobni ochib \U0001f501 Qayta urinish." if shop.ENABLED else "")
 
 
 def _after_markup() -> InlineKeyboardMarkup | None:
@@ -1052,14 +1091,15 @@ async def _worker_loop() -> None:
         _job_var.set(job)
         await _refresh_positions()
         try:
-            if job.get("order"):
-                await shop.process_order(job)
+            if job.get("order") and not job.get("quick"):
+                await shop.process_order(job)          # yuklash seansi (bir nechta fayl)
             else:
                 await _process_photo(job["update"], job["context"], job["status"])
         except Exception:
             logger.exception("Ish xatosi (user=%s)", job["user"])
             _refund(job)
-            await _edit_status(job["status"], "Kechirasiz, kutilmagan xatolik yuz berdi.")
+            await _edit_status(job["status"], "\u26a0\ufe0f Kutilmagan xatolik - bu bob tarjima "
+                               "qilinmadi." + _fail_note())
         finally:
             if not job.get("delivered"):
                 _refund(job)            # natija yetib bormadi - bepul bob sarflanmaydi
@@ -1309,7 +1349,7 @@ async def _process_pdf(update: Update | None, context: ContextTypes.DEFAULT_TYPE
     await _edit_status(status_msg, "Yuborilmoqda...")
     for attempt in range(4):
         try:
-            await context.bot.send_document(
+            sent = await context.bot.send_document(
                 chat_id=chat_id,
                 document=io.BytesIO(result_pdf),
                 filename=f"{src_name} (o'zbekcha).pdf",
@@ -1318,7 +1358,7 @@ async def _process_pdf(update: Update | None, context: ContextTypes.DEFAULT_TYPE
                 write_timeout=900, read_timeout=300,
                 reply_markup=shop.after_markup(ref) if shop.ENABLED else _after_markup(),
             )
-            _mark_delivered()
+            _mark_delivered(sent, caption)
             break
         except RetryAfter as exc:
             raw = getattr(exc, "retry_after", 5)
@@ -1383,12 +1423,13 @@ async def _process_photo(update: Update, context: ContextTypes.DEFAULT_TYPE, sta
         result_bytes, translations = result
         logger.info("Chizildi: %.0f KB", len(result_bytes) / 1024)
 
-        await _send_result(context, chat_id, result_bytes, _caption(translations))
-        _mark_delivered()
+        cap = _caption(translations)
+        sent = await _send_result(context, chat_id, result_bytes, cap)
+        _mark_delivered(sent, cap)
         await status_msg.delete()
     except TranslationError as exc:
         logger.warning("Tarjima xatosi (user=%s): %s", update.effective_user.id, exc)
-        await status_msg.edit_text(str(exc))
+        await status_msg.edit_text(str(exc) + _fail_note())
     except TelegramError as exc:
         logger.exception("Telegram xatosi (user=%s)", update.effective_user.id)
         await status_msg.edit_text(
@@ -1397,13 +1438,13 @@ async def _process_photo(update: Update, context: ContextTypes.DEFAULT_TYPE, sta
     except Exception:
         logger.exception("Kutilmagan xatolik (user=%s)", update.effective_user.id)
         await status_msg.edit_text(
-            "Kechirasiz, kutilmagan xatolik yuz berdi. Birozdan so'ng qayta urinib ko'ring."
+            "\u26a0\ufe0f Kutilmagan xatolik - bob tarjima qilinmadi." + _fail_note()
         )
     finally:
         typing_task.cancel()
 
 
-async def _send_result(context: ContextTypes.DEFAULT_TYPE, chat_id: int, image_bytes: bytes, caption: str) -> None:
+async def _send_result(context: ContextTypes.DEFAULT_TYPE, chat_id: int, image_bytes: bytes, caption: str):
     from PIL import Image as PILImage
 
     with PILImage.open(io.BytesIO(image_bytes)) as im:
@@ -1415,18 +1456,16 @@ async def _send_result(context: ContextTypes.DEFAULT_TYPE, chat_id: int, image_b
     for attempt in range(4):
         try:
             if as_document:
-                await context.bot.send_document(
+                return await context.bot.send_document(
                     chat_id=chat_id,
                     document=io.BytesIO(image_bytes),
                     filename="tarjima.jpg",
                     caption=caption, reply_markup=shop.after_markup(None) if shop.ENABLED else _after_markup(),
                 )
-            else:
-                await context.bot.send_photo(
-                    chat_id=chat_id, photo=io.BytesIO(image_bytes), caption=caption,
-                    reply_markup=shop.after_markup(None) if shop.ENABLED else _after_markup(),
-                )
-            return
+            return await context.bot.send_photo(
+                chat_id=chat_id, photo=io.BytesIO(image_bytes), caption=caption,
+                reply_markup=shop.after_markup(None) if shop.ENABLED else _after_markup(),
+            )
         except RetryAfter as exc:
             raw = getattr(exc, "retry_after", 5)
             if hasattr(raw, "total_seconds"):          # yangi versiyalarda timedelta
