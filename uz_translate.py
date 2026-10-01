@@ -622,9 +622,11 @@ def _gemini(english: list[str], drafts: list[str]) -> list[str] | None:
         return None
     system = _system_prompt()
     for attempt in range(2):
-        for spec in GEMINI_MODELS:
-          model, _, level = spec.partition(":")
-          for k, key in enumerate(GEMINI_KEYS):
+        # Tartib (foydalanuvchi: "birinchisining limiti tugasa ikkinchisiga o'tsin"): avval 1-kalitning
+        # hamma modellari, u tugagach (hammasi dam olishda) - 2-kalit.
+        for k, key in enumerate(GEMINI_KEYS):
+          for spec in GEMINI_MODELS:
+            model, _, level = spec.partition(":")
             if _cooldown.get((k, model), 0) > time.time():
                 continue
             if model.startswith("gemma"):
