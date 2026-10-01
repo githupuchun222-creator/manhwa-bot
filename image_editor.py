@@ -72,6 +72,21 @@ STYLE_FONTS = {
 _style = threading.local()       # hozir chizilayotgan matn uslubi (sahifalar parallel bo'lishi mumkin)
 
 
+@lru_cache(maxsize=16)
+def _cap_height(style: str) -> float:
+    box = _load_font_style(100, style).getbbox("HOXZ")
+    return max(1.0, box[3] - box[1])
+
+
+def _size_scale() -> float:
+    """Shriftlar bir xil o'lchamda har xil balandlikda (Bangers past) - asl harf balandligiga
+    tenglashtirish koeffitsienti (asosiy Digital Strip'ga nisbatan, 0.8-1.6)."""
+    if not FONT_STYLES:
+        return 1.0
+    style = getattr(_style, "name", "speech")
+    return min(1.6, max(0.8, _cap_height("speech") / _cap_height(style)))
+
+
 def _load_font(size: int) -> ImageFont.FreeTypeFont:
     return _load_font_style(size, getattr(_style, "name", "speech") if FONT_STYLES else "speech")
 
@@ -424,7 +439,7 @@ def _surrounding_region(close: np.ndarray, text_box: tuple[int, int, int, int]) 
 
 
 def _fill_bubble(arr: np.ndarray, box: tuple[int, int, int, int],
-                 bg: tuple[int, int, int]):
+                 bg: tuple[int, int, int], grow: float = 1.0):
     """Pufakcha ichini fon rangi bilan to'ldiradi (shaklini saqlab).
 
     Returns: (ichki_quti, tegilgan_tomonlar) - ichki_quti matn yozish uchun
@@ -441,7 +456,7 @@ def _fill_bubble(arr: np.ndarray, box: tuple[int, int, int, int],
     # Qidiruv oynasi matn qutisidan KENGROQ: tezkor OCR faqat matnni o'raydi,
     # pufakcha esa undan ancha katta. Pufakcha to'liq topilsa, tarjima uchun
     # joy ko'payadi va shrift kattaroq chiqadi.
-    mx, my = max(40, int(bw * 0.5)), max(40, int(bh * 1.2))
+    mx, my = int(max(40, bw * 0.5) * grow), int(max(40, bh * 1.2) * grow)
     x1, y1 = max(0, bx1 - mx), max(0, by1 - my)
     x2, y2 = min(W, bx2 + mx), min(H, by2 + my)
     sub = arr[y1:y2, x1:x2]
@@ -627,7 +642,7 @@ def _fit_text(draw: ImageDraw.ImageDraw, text: str, box_w: int, box_h: int,
     """
     size = max(9, min(box_h // 2, int(box_w / 3)))
     if max_size:
-        size = max(9, min(size, max_size))
+        size = max(9, min(size, int(max_size * _size_scale())))
     while size >= 9:
         font = _load_font(size)
         lines = _wrap(draw, text, font, box_w)
@@ -759,11 +774,17 @@ def _draw_in_shape(draw, shape, text_box, text: str, color, max_size: int | None
     ox, oy, _ = shape
     tx1, ty1, tx2, ty2 = text_box
     depth = _shape_depth(shape)
-    start = max_size or 60
+    start = int((max_size or 60) * _size_scale())
     for size in range(max(10, start), 9, -1):
         # matn pufakcha chizig'iga tegmasin. FONT_STYLES botida kengroq zaxira (foydalanuvchi:
         # "mayda so'zlar chegarasidan chiqib ketyapti")
         mask = depth > (max(6, int(size * 0.55)) if FONT_STYLES else max(3, size // 3))
+        if FONT_STYLES:
+            # Asl yozuv eni (+8%) dan kengaymasin: katta pufakchada tarjima ikki uzun qatorga
+            # cho'zilib mayda chiqardi - asl yozuvdagidek ixcham blok bo'lib o'raladi.
+            pad = int((tx2 - tx1) * 0.08)
+            mask[:, :max(0, tx1 - ox - pad)] = False
+            mask[:, max(0, tx2 - ox + pad):] = False
         if not mask.any():
             continue
         cx, cy = (tx1 + tx2) // 2 - ox, (ty1 + ty2) // 2 - oy
@@ -1118,6 +1139,17 @@ def render_translation(image_bytes: bytes, translations: list[dict], quality: in
                 continue
         before = _ink(arr, box, bg_color)
         filled = _fill_bubble(arr, box, bg_color)
+        if FONT_STYLES and filled is not None and filled[1]:
+            # Katta pufakcha (baqiriq) qidiruv oynasiga sig'madi - kattaroq oynada qayta. Aks holda
+            # "ochiq pufakcha" deb matn asl yozuvning tor joyiga mayda bo'lib siqilardi va tikan
+            # chetidan chiqib ketardi (foydalanuvchi skrinshoti, 2026-10-01). Avval nusxada sinaladi.
+            for grow in (2.5, 4.0):
+                trial = arr.copy()
+                bigger = _fill_bubble(trial, box, bg_color, grow=grow)
+                if bigger is not None and not bigger[1]:
+                    arr[:] = trial
+                    filled = bigger
+                    break
         if filled is not None:
             inner, touched, shape = filled
             style = _bubble_style(shape, touched)   # shakl quyida (ochiq pufakchada) tashlanishidan oldin
