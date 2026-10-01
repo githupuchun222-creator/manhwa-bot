@@ -49,6 +49,8 @@ jobs:
           PUBLIC_BOT: "1"
           # Oddiy foydalanuvchiga 1 ta bepul bob, keyin egasiga murojaat (@sharofovsaid)
           FREE_CHAPTERS: "1"
+          # Bitta odam kuniga eng ko'pi 200 bob (adminlar cheklanmaydi; Toshkent 00:00 da yangilanadi)
+          DAILY_LIMIT: "200"
           # Buyurtma dizayni (shop.py): 6 tugmali menyu, bosqichli buyurtma, Buyurtmalarim, /admin panel
           SHOP_UI: "1"
           # Navbatsiz: bir vaqtda 3 ta ish, bo'sh foydalanuvchi oldinga (bot.py _pick_job)

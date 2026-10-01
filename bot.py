@@ -648,6 +648,19 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await msg.reply_text(too_big_text(user_id, size))
         return
 
+    # Kunlik chegara (DAILY_LIMIT): bitta bob = bitta PDF/ZIP yoki bitta albom yoki bitta rasm
+    daily = False
+    if admins.DAILY_LIMIT and not admins.is_admin(user_id):
+        group = msg.media_group_id
+        if not (group and _daily_groups.get(user_id) == group):
+            if admins.daily_blocked(user_id):
+                await msg.reply_text(daily_limit_text())
+                return
+            admins.add_daily(user_id)
+            daily = True
+            if group:
+                _daily_groups[user_id] = group
+
     # Bepul cheklov: oddiy foydalanuvchiga FREE_CHAPTERS ta bob. Bitta bob = bitta PDF
     # yoki bitta albom (birga yuborilgan rasmlar, media_group_id bir xil) yoki bitta rasm.
     charged = False
@@ -658,6 +671,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 text, markup = _sub_panel(user_id)
                 await msg.reply_text(text, reply_markup=markup, parse_mode="HTML")
                 await _ask_owner_to_pay(context, update.effective_user)
+                if daily:
+                    admins.add_daily(user_id, -1)
                 return
             admins.add_used(user_id)
             charged = True
@@ -668,6 +683,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if mine >= MAX_QUEUE_PER_USER:
         if charged:
             admins.add_used(user_id, -1)
+        if daily:
+            admins.add_daily(user_id, -1)
         await msg.reply_text(f"Navbatda sizning {mine} ta ishingiz bor — avval ular tugasin.")
         return
 
@@ -684,7 +701,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     fname = (msg.document.file_name if msg.document else None) or "rasm"
     job = {"update": update, "context": context, "user": user_id, "id": _job_counter["n"],
            "name": fname, "who": update.effective_user.full_name or str(user_id),
-           "cancelled": False, "free": charged, "status": await msg.reply_text(text)}
+           "cancelled": False, "free": charged, "daily": daily, "status": await msg.reply_text(text)}
     _waiting.append(job)
     await _queue.put(job)
     logger.info("Navbatga qo'yildi: user=%s, oldinda=%d", user_id, ahead)
@@ -854,8 +871,23 @@ def _after_markup() -> InlineKeyboardMarkup | None:
                                   _btn("🏠 Menyu", "m:main")]])
 
 
+_daily_groups: dict[int, str] = {}     # kunlik hisobga olingan albom (foydalanuvchi -> id)
+
+
+def daily_limit_text() -> str:
+    return (f"⛔ Bugungi chegara tugadi: bir kunda eng ko'pi {admins.DAILY_LIMIT} ta bob.\n"
+            "Chegara har kuni Toshkent vaqti bilan 00:00 da yangilanadi - ertaga davom ettiring.")
+
+
 def _refund(job: dict) -> None:
     """Bepul bob bajarilmay qolsa (bekor qilindi / xato) - hisobdan qaytariladi."""
+    if job.get("daily"):                 # kunlik hisob ham
+        job["daily"] = False
+        try:
+            admins.add_daily(job["user"], -1)
+            _daily_groups.pop(job["user"], None)
+        except Exception:
+            logger.exception("Kunlik hisob qaytarilmadi")
     if job.get("free"):
         job["free"] = False
         try:

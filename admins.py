@@ -217,3 +217,33 @@ def find_user(text: str) -> int | None:
     if "t.me/" in t:
         t = t.rsplit("/", 1)[-1]
     return _load().get("users", {}).get(t)
+
+
+# KUNLIK CHEGARA (2026-10-01, foydalanuvchi: "bitta odam kuniga 200 tadan oshiq bob tarjima
+# qildira olmasin"). Kun - Toshkent vaqti bo'yicha (00:00 da yangilanadi). Adminlar cheklanmaydi.
+DAILY_LIMIT = int(os.getenv("DAILY_LIMIT", "0") or 0)
+
+
+def _today() -> str:
+    return _time.strftime("%Y-%m-%d", _time.gmtime(_time.time() + 5 * 3600))
+
+
+def daily_used(user_id: int) -> int:
+    d = _load().get("daily", {})
+    return int(d.get("n", {}).get(str(user_id), 0)) if d.get("day") == _today() else 0
+
+
+def add_daily(user_id: int, delta: int = 1) -> int:
+    data = _load()
+    d = data.get("daily", {})
+    if d.get("day") != _today():
+        d = {"day": _today(), "n": {}}               # yangi kun - eski hisob tozalanadi
+    n = max(0, int(d["n"].get(str(user_id), 0)) + delta)
+    d["n"][str(user_id)] = n
+    data["daily"] = d
+    _save(data)
+    return n
+
+
+def daily_blocked(user_id: int) -> bool:
+    return bool(DAILY_LIMIT) and not is_admin(user_id) and daily_used(user_id) >= DAILY_LIMIT

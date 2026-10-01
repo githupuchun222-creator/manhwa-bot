@@ -200,7 +200,9 @@ async def show_price(update: Update, context, edit=False) -> None:
             "📚 <b>Alohida boblar / katta hajm:</b> narx bob uzunligi va ishga qarab - admin bilan kelishiladi\n\n"
             "<b>To‘lov:</b> admin bilan yozishmada kelishiladi. To‘lovdan keyin admin obunangizni "
             "qo‘lda yoqadi (avtomatik to‘lov yo‘q).\n\n"
-            "<b>Cheklovlar:</b>\n" + _limits_text(uid) + "\n\n" + _trial_line(uid) +
+            "<b>Cheklovlar:</b>\n" + _limits_text(uid) +
+            (f"\n• Bir kunda eng ko‘pi <b>{admins.DAILY_LIMIT}</b> ta bob (bugun: {admins.daily_used(uid)})"
+             if admins.DAILY_LIMIT and not admins.is_admin(uid) else "") + "\n\n" + _trial_line(uid) +
             f"\n\nSizning ID: <code>{uid}</code> (admin bilan yozishganda yuboring)")
     rows = [_contact_button()] if _owner() else []
     rows.append([_ib("📝 Buyurtma tafsilotlarini yuborish", "sh:inq")])
@@ -572,6 +574,9 @@ async def _confirm(update: Update, context, draft: dict, nonce: str) -> None:
     if not cur or cur.get("nonce") != nonce:
         await q.answer("Bu buyurtma allaqachon yuborilgan.", show_alert=False)
         return
+    if admins.daily_blocked(uid):
+        await _reply(update, B.daily_limit_text(), None, edit=True)
+        return
     data["drafts"].pop(str(uid), None)
     st = trial_state(uid)
     if st in ("ishlatilgan", "band"):
@@ -599,12 +604,15 @@ async def _confirm(update: Update, context, draft: dict, nonce: str) -> None:
     if kind == "bepul":
         admins.add_used(uid)                               # Band (yetib bormasa qaytariladi)
         charged = True
+    daily = bool(admins.DAILY_LIMIT) and not admins.is_admin(uid)
+    if daily:
+        admins.add_daily(uid)
     await _reply(update, _summary(uid, draft).replace("🧾 <b>Buyurtmani tekshiring</b>",
                                                       f"✅ <b>Buyurtma qabul qilindi: {ref}</b>"), None, edit=True)
-    await enqueue_order(context, order, charged)
+    await enqueue_order(context, order, charged, daily)
 
 
-async def enqueue_order(context, order: dict, charged: bool) -> None:
+async def enqueue_order(context, order: dict, charged: bool, daily: bool = False) -> None:
     ahead = len(B._waiting) + len(B._active)
     status = await context.bot.send_message(
         order["uid"], f"🧾 {order['ref']}: " + ("tarjima boshlanmoqda..." if ahead < B.PARALLEL_JOBS else
@@ -612,7 +620,7 @@ async def enqueue_order(context, order: dict, charged: bool) -> None:
     B._job_counter["n"] += 1
     job = {"update": None, "context": context, "user": order["uid"], "id": B._job_counter["n"],
            "name": f"{order['title']} {order['chapter']} ({order['ref']})", "who": order["who"],
-           "cancelled": False, "free": charged, "status": status, "order": order["ref"]}
+           "cancelled": False, "free": charged, "daily": daily, "status": status, "order": order["ref"]}
     B._waiting.append(job)
     await B._queue.put(job)
 
