@@ -177,6 +177,26 @@ def merge_lines(items: list[dict], image: Image.Image | None = None) -> list[dic
 
 def _reading_order_text(members: list[dict]) -> str:
     """Qatorlarni yuqoridan pastga, bir qatordagilarni chapdan o'ngga tartiblaydi."""
+    ang = float(np.median([m.get("angle") or 0.0 for m in members]))
+    if abs(ang) >= 2:
+        # Qiya yozuv: to'g'ri quti balandligi qatordan bir necha baravar katta - qatorlar bitta
+        # "satr" bo'lib, chapdan o'ngga aralashib ketardi. Yozuv o'qi bo'yicha burib tartiblaymiz.
+        c, s = np.cos(np.radians(ang)), np.sin(np.radians(ang))
+
+        def pos(m: dict) -> tuple[float, float]:
+            cx, cy = (m["bbox"][0] + m["bbox"][2]) / 2, _center_y(m["bbox"])
+            return cx * c + cy * s, cy * c - cx * s      # (qator bo'ylab, qatorga ko'ndalang)
+
+        trows: list[list[dict]] = []
+        for m in sorted(members, key=lambda m: pos(m)[1]):
+            h = m.get("line_h") or (m["bbox"][3] - m["bbox"][1])
+            if trows and abs(pos(trows[-1][0])[1] - pos(m)[1]) < h * 0.5:
+                trows[-1].append(m)
+            else:
+                trows.append([m])
+        texts = [(m.get("original") or "").strip()
+                 for row in trows for m in sorted(row, key=lambda m: pos(m)[0])]
+        return " ".join(t for t in texts if t)
     rows: list[list[dict]] = []
     for m in sorted(members, key=lambda m: _center_y(m["bbox"])):
         h = m["bbox"][3] - m["bbox"][1]

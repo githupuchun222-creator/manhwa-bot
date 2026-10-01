@@ -1239,7 +1239,8 @@ def _bubble_style(shape, touched: int) -> str:
 
 
 # Qiyalik (FONT_STYLES): asl yozuv 2.5-20 daraja qiya bo'lsa - tarjima ham shunday buriladi.
-TILT_MIN, TILT_MAX = 2.5, 20.0
+TILT_MIN, TILT_MAX = 2.5, 30.0
+TILT_STEEP = 20.0   # bundan qiyaroq yozuvda pufakcha to'ldirilmaydi, faqat harflar o'chiriladi
 
 
 def _draw_job(out: Image.Image, draw, job, off: tuple[int, int]) -> None:
@@ -1371,7 +1372,12 @@ def render_translation(image_bytes: bytes, translations: list[dict], quality: in
                 jobs.append(("system", area, bg_color, uzbek_text, max_size, sys_ink, angle))
                 continue
         before = _ink(arr, box, bg_color)
-        if FONT_STYLES:
+        if FONT_STYLES and TILT_STEEP < abs(angle) <= TILT_MAX:
+            # Keskin qiya yozuv: to'g'ri quti burchaklari yozuvdan tashqariga (boshqa fonga) chiqadi -
+            # halqadan olingan fon rangi va flood ishonchsiz, oyna ichiga boshqa rangli tik
+            # kesilgan dog' bo'yalardi (sinov, 25 daraja). Faqat harflar o'chiriladi.
+            filled = None
+        elif FONT_STYLES:
             # Hammasi avval NUSXADA sinaladi. Katta pufakcha (baqiriq) qidiruv oynasiga sig'masa -
             # kattaroq oynada qayta (aks holda matn tor joyga mayda siqilib, tikandan chiqardi).
             # Hudud sahifa/rasmga sizib chiqqan bo'lsa (_leaked) - pufakcha bo'yalmaydi.

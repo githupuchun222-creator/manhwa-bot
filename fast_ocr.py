@@ -133,7 +133,10 @@ def _run(kind: str, arr: np.ndarray) -> list[dict]:
         out.append({"bbox": [float(x1), float(y1), float(x2), float(y2)],
                     "original": text, "score": float(score),
                     "line_h": true_h if abs(angle) >= 2 else float(y2 - y1),
-                    "angle": angle if abs(angle) < 45 else 0.0})
+                    "angle": angle if abs(angle) < 45 else 0.0,
+                    # qiya qatorlarning to'g'ri qutilari ustma-ust tushadi - takror/tartib
+                    # tekshiruvi (translator, image_utils) shu poligon bo'yicha ishlaydi
+                    "poly": [[float(px), float(py)] for px, py in pts]})
     return out
 
 

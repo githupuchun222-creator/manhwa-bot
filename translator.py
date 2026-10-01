@@ -272,15 +272,39 @@ def _read_fast_tiled(image, budget: dict | None) -> list[dict]:
             if (y1 <= 2 and not is_first) or (y2 >= tile.height - 2 and not is_last):
                 continue                                  # chegarada kesilgan qator
             item["bbox"] = [x1, y1 + top_offset, x2, y2 + top_offset]
+            if item.get("poly"):
+                item["poly"] = [[px, py + top_offset] for px, py in item["poly"]]
             collected.append(item)
 
     collected.sort(key=lambda it: -it.get("score", 0.0))
     kept: list[dict] = []
     for item in collected:
-        if all(_iou(item["bbox"], k["bbox"]) <= 0.5 and _inside(item["bbox"], k["bbox"]) <= 0.6
-               for k in kept):
+        if all(iou <= 0.5 and inside <= 0.6 for iou, inside in (_overlap(item, k) for k in kept)):
             kept.append(item)
     return kept
+
+
+def _overlap(a: dict, b: dict) -> tuple[float, float]:
+    """(IoU, kichik qutining qoplangan ulushi). Qiya qator bo'lsa - POLIGON bo'yicha.
+
+    Qiya yozuvning (tizim oynasi, 10-25 daraja) qo'shni qatorlari to'g'ri qutida deyarli to'liq
+    ustma-ust tushadi - "takror" deb har ikkinchi qator tashlanardi: tarjima ma'nosiz chiqib,
+    asl yozuvning yarmi o'chmay qolgan (foydalanuvchi skrinshoti, 2026-10-01).
+    """
+    pa, pb = a.get("poly"), b.get("poly")
+    if pa and pb and (abs(a.get("angle") or 0.0) >= 2 or abs(b.get("angle") or 0.0) >= 2):
+        try:
+            import cv2
+            import numpy as np
+
+            qa, qb = np.asarray(pa, np.float32), np.asarray(pb, np.float32)
+            area_a, area_b = cv2.contourArea(qa), cv2.contourArea(qb)
+            inter = float(cv2.intersectConvexConvex(qa, qb)[0])
+            union, small = area_a + area_b - inter, min(area_a, area_b)
+            return (inter / union if union > 0 else 0.0, inter / small if small > 0 else 0.0)
+        except Exception:
+            pass
+    return _iou(a["bbox"], b["bbox"]), _inside(a["bbox"], b["bbox"])
 
 
 def _inside(a, b) -> float:
