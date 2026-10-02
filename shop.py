@@ -1007,13 +1007,7 @@ async def _load_pages(context, files: list[dict]) -> list[bytes]:
     from PIL import Image
     pages: list[bytes] = []
     for f in files:
-        if f["size"] > B.MAX_DOWNLOAD_BYTES:
-            data = await B.bigfile.download(f["id"], B.BOT_TOKEN)
-        else:
-            tg_file = await context.bot.get_file(f["id"])
-            buf = io.BytesIO()
-            await tg_file.download_to_memory(out=buf)
-            data = buf.getvalue()
+        data = await B.download_file(context.bot, f["id"], f["size"])     # qayta urinish bilan
         if f["kind"] == "zip" or B.pdf_utils.is_zip(data, f.get("name")):
             pages += B.pdf_utils.zip_pages(data, B.MAX_PDF_PAGES)
         elif f["kind"] == "pdf" or B.pdf_utils.is_pdf(data):

@@ -59,6 +59,37 @@ MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024
 TRIAL_MAX_BYTES = int(os.getenv("TRIAL_MAX_MB", "20")) * 1024 * 1024
 
 
+DOWNLOAD_TRIES = 4
+
+
+async def download_file(tg_bot, file_id: str, size: int = 0) -> bytes:
+    """Faylni Telegram'dan yuklab oladi. Tarmoq uzilsa/sekinlashsa qayta urinadi; oxirgi chora - MTProto.
+
+    Avval bitta urinish muvaffaqiyatsiz bo'lsa butun buyurtma xato bilan yopilardi (2026-10-02: sekin
+    internetda 17 MB fayl 60 s ga sig'may, kechqurun 4 ta ish shunday yiqildi).
+    """
+    if size > MAX_DOWNLOAD_BYTES:
+        return await bigfile.download(file_id, BOT_TOKEN)
+    last: Exception | None = None
+    for attempt in range(1, DOWNLOAD_TRIES + 1):
+        try:
+            tg_file = await tg_bot.get_file(file_id, read_timeout=60, connect_timeout=30, pool_timeout=30)
+            buf = io.BytesIO()
+            await tg_file.download_to_memory(out=buf, read_timeout=180, connect_timeout=30, pool_timeout=30)
+            return buf.getvalue()
+        except (TimedOut, NetworkError) as exc:
+            last = exc
+            logger.warning("Fayl yuklab olinmadi (%d/%d-urinish): %s", attempt, DOWNLOAD_TRIES, exc)
+            await asyncio.sleep(3 * attempt)
+    if bigfile.enabled():
+        try:
+            logger.warning("Fayl oddiy yo'l bilan olinmadi - MTProto orqali urinilmoqda")
+            return await bigfile.download(file_id, BOT_TOKEN)
+        except Exception as exc:
+            logger.warning("MTProto orqali ham olinmadi: %s", exc)
+    raise last
+
+
 def max_upload_bytes(uid: int) -> int:
     big = bigfile.MAX_BIG_BYTES if bigfile.enabled() else MAX_DOWNLOAD_BYTES
     if admins.FREE_CHAPTERS and not admins.is_admin(uid) and not admins.is_paying(uid):
@@ -612,13 +643,7 @@ async def _learn_from_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     doc = msg.document
     status = await msg.reply_text("🎓 Namuna yuklab olinmoqda...")
     try:
-        if (doc.file_size or 0) > MAX_DOWNLOAD_BYTES:
-            data = await bigfile.download(doc.file_id, BOT_TOKEN)
-        else:
-            tg_file = await context.bot.get_file(doc.file_id)
-            buf = io.BytesIO()
-            await tg_file.download_to_memory(out=buf)
-            data = buf.getvalue()
+        data = await download_file(context.bot, doc.file_id, doc.file_size or 0)
         if pdf_utils.is_zip(data, doc.file_name):
             pages = await asyncio.to_thread(pdf_utils.zip_pages, data, LEARN_PAGES)
         elif pdf_utils.is_pdf(data, doc.file_name):
@@ -1524,10 +1549,7 @@ async def _process_photo(update: Update, context: ContextTypes.DEFAULT_TYPE, sta
             await _edit_status(status_msg, f"Katta fayl ({size / 2**20:.0f} MB) yuklab olinmoqda...")
             file_bytes = await bigfile.download(photo.file_id, BOT_TOKEN)
         else:
-            tg_file = await photo.get_file()
-            buf = io.BytesIO()
-            await tg_file.download_to_memory(out=buf)
-            file_bytes = buf.getvalue()
+            file_bytes = await download_file(context.bot, photo.file_id, size)
         logger.info("Fayl yuklandi: %.0f KB", len(file_bytes) / 1024)
 
         doc = update.message.document
