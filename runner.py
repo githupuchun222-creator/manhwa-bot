@@ -40,7 +40,7 @@ RESTART_FLAG = Path(__file__).with_name("restart.flag")
 # telefon esa KUTISH holatiga o'tadi (o'chmaydi) va noutbuk jim bo'lishi bilan o'zi davom etadi.
 # Ikkitasi bir vaqtda xabar olmaydi: pastdagi tugatguncha yuqoridagi kutadi (x-wait).
 ROLE = os.getenv("RUNNER_ROLE", "backup")
-STANDBY_EVERY = 5
+STANDBY_EVERY = 60          # kutishdagi telefon darvozani kamroq so'raydi (Cloudflare so'rov limiti)
 # DARVOZASIZ REJIM (2026-10-02): darvoza D1 bazasiga yozadi; hisobning bepul kunlik yozish limiti tugasa
 # (kuniga 100 000 qator, 05:00 da tiklanadi) u na xabarni saqlay oladi, na bera oladi - bot soatlab
 # "kar" bo'lib qolardi. Endi darvoza GATE_DOWN_AFTER soniya javob bermasa, ASOSIY runner (noutbuk)
