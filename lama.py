@@ -97,8 +97,12 @@ def inpaint(arr: np.ndarray, box: tuple[int, int, int, int], mask: np.ndarray) -
         mw, mh = mx2 - mx1, my2 - my1
         # Uzun yozuv kvadratga yaqin bo'laklarga bo'linadi (model 512x512 - cho'zilsa sifat tushadi)
         side = int(max(mh * 3.0, 420))
-        step = max(64, int(side * 0.6))
-        starts = [mx1] if mw <= side else list(range(mx1, mx2 - side + step, step))
+        if mw <= side * 2.5:
+            # bitta bo'lak: model baribir 512x512 ga keltiradi; orqa fon ustiga tarjima yoziladi -
+            # ozgina cho'zilish sezilmaydi, vaqt esa 2-3 barobar kam
+            side = mw
+        step = side                                    # juda keng yozuv: ustma-ust tushmaydigan bo'laklar
+        starts = [mx1] if mw <= side else list(range(mx1, mx2, step))
         feather = cv2.GaussianBlur(
             cv2.dilate(full.astype(np.uint8), np.ones((5, 5), np.uint8)).astype(np.float32), (0, 0), 2.0)
         result = arr.astype(np.float32).copy()

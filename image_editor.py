@@ -1113,6 +1113,29 @@ def _fill_masked(arr: np.ndarray, box: tuple[int, int, int, int], mask: np.ndarr
     arr[Y1:Y2, X1:X2] = out.astype(np.uint8)
 
 
+def _textured(arr: np.ndarray, region) -> bool:
+    """Yozuv atrofidagi fon naqshli/rasmlimi (LaMa kerak) yoki tekis/silliq o'tishlimi (tez to'ldirish yetadi).
+
+    Qutining chetidagi halqa bo'yicha: silliq o'tish (gradient) olib tashlangach qolgan notekislik o'lchanadi.
+    """
+    x1, y1, x2, y2 = region
+    sub = arr[y1:y2, x1:x2]
+    if sub.shape[0] < 12 or sub.shape[1] < 12:
+        return True
+    lum = sub.astype(np.float32) @ np.array([0.299, 0.587, 0.114], np.float32)
+    t = max(3, min(sub.shape[0], sub.shape[1]) // 10)
+    resid = []
+    for strip in (lum[:t], lum[-t:], lum[:, :t].T, lum[:, -t:].T):
+        line = strip.mean(axis=0)                       # halqa bo'ylab profil
+        if len(line) < 8:
+            continue
+        xs = np.arange(len(line), dtype=np.float32)
+        resid.append(line - np.polyval(np.polyfit(xs, line, 2), xs))
+    if not resid:
+        return True
+    return float(np.concatenate(resid).std()) > 6.0
+
+
 def _lama_rect(arr: np.ndarray, box, region, grow: float, letters=None) -> bool:
     """Asl matn qutisini (grow ulushga kengaytirib) LaMa bilan qayta chizadi. False - model yo'q.
 
@@ -1127,6 +1150,8 @@ def _lama_rect(arr: np.ndarray, box, region, grow: float, letters=None) -> bool:
 
         if not lama.available():
             return False
+        if letters is not None and not _textured(arr, region):
+            return False          # tekis fon: tez to'ldirish toza chiqadi, LaMa'ga vaqt sarflanmaydi
         x1, y1, x2, y2 = region
         ob = [int(v) for v in box]
         e = max(4, int((ob[3] - ob[1]) * grow))
