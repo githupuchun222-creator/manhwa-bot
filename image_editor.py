@@ -1113,8 +1113,38 @@ def _fill_masked(arr: np.ndarray, box: tuple[int, int, int, int], mask: np.ndarr
     arr[Y1:Y2, X1:X2] = out.astype(np.uint8)
 
 
+def _lama_rect(arr: np.ndarray, box, region, grow: float, letters=None) -> bool:
+    """Asl matn qutisini (grow ulushga kengaytirib) LaMa bilan qayta chizadi. False - model yo'q.
+
+    letters (bool niqob, region o'lchamida) berilsa - quti ichidagi FAQAT harflar o'chiriladi.
+    Butun qutini o'chirish oddiy matnda ortiqcha: haqiqiy bobda bezakli sarlavha ramkasi ichidagi
+    yozuv o'rniga model och rangli "lenta" chizib qo'ygan edi. Harflar orasidagi rasm saqlansa,
+    model aniq nimani tiklashni biladi. Katta bezakli yozuvda (qalin harf) esa butun quti olinadi -
+    harf detektori qalin harfning ichini ko'rmaydi.
+    """
+    try:
+        import lama
+
+        if not lama.available():
+            return False
+        x1, y1, x2, y2 = region
+        ob = [int(v) for v in box]
+        e = max(4, int((ob[3] - ob[1]) * grow))
+        rect = np.zeros((y2 - y1, x2 - x1), bool)
+        rect[max(0, ob[1] - e - y1):max(0, ob[3] + e - y1),
+             max(0, ob[0] - e - x1):max(0, ob[2] + e - x1)] = True
+        if letters is not None:
+            import cv2
+            m = cv2.dilate((letters & rect).astype(np.uint8), np.ones((3, 3), np.uint8), iterations=2) > 0
+            if m.mean() > 0.002:
+                rect = m
+        return lama.inpaint(arr, region, rect)
+    except Exception:
+        return False
+
+
 def _inpaint_text(arr: np.ndarray, box: tuple[int, int, int, int],
-                  glow: bool = False) -> tuple[int, int, int, int]:
+                  glow: bool = False, solid: bool = False) -> tuple[int, int, int, int]:
     """Rasm/fon ustidagi harflarni "bo'yab" o'chiradi (OpenCV inpaint).
 
     Bir rangli to'rtburchak bilan yopish rasmda dog' qoldirardi. Inpaint esa
@@ -1160,7 +1190,10 @@ def _inpaint_text(arr: np.ndarray, box: tuple[int, int, int, int],
 
         if glow and FONT_STYLES:
             mask = cv2.dilate(mask, np.ones((3, 3), np.uint8), iterations=4)
-            _fill_masked(arr, (x1, y1, x2, y2), mask > 0)
+            # Bu yo'lga rasm ustidagi oq hikoya matni ham tushadi - xiralashtirib to'ldirish u yerda
+            # kulrang yamoq qoldirardi (foydalanuvchi skrinshotlari, 2026-10-02). LaMa bo'lsa - u bilan.
+            if not _lama_rect(arr, box, (x1, y1, x2, y2), 0.14, None if solid else mask > 0):
+                _fill_masked(arr, (x1, y1, x2, y2), mask > 0)
             return (x1 + pad - 6, y1 + pad - 6, x2 - pad + 6, y2 - pad + 6)
 
         flat = _flat_bg(arr, (x1, y1, x2, y2)) if FONT_STYLES else None
@@ -1180,13 +1213,51 @@ def _inpaint_text(arr: np.ndarray, box: tuple[int, int, int, int],
             return (x1, y1, x2, y2)
         mask = cv2.dilate(mask, np.ones((3, 3), np.uint8), iterations=3 if FONT_STYLES else 2)
         if FONT_STYLES:
-            _fill_masked(arr, (x1, y1, x2, y2), mask > 0)
+            # RASM ustidagi yozuv. Atrofdan xiralashtirib to'ldirish rasmda kulrang yamoq qoldirardi
+            # (foydalanuvchi skrinshotlari, 2026-10-02) - LaMa o'sha joyni rasmga mos qayta chizadi.
+            # Niqob - asl matn qutisi (ozgina kengaytirilgan): harf qoldig'i qolmasligi kafolatlanadi.
+            if not _lama_rect(arr, box, (x1, y1, x2, y2), 0.06, None if solid else mask > 0):
+                _fill_masked(arr, (x1, y1, x2, y2), mask > 0)
             return (x1, y1, x2, y2)
         fixed = cv2.inpaint(np.ascontiguousarray(region[:, :, ::-1]), mask, 4, cv2.INPAINT_TELEA)
         arr[y1:y2, x1:x2] = fixed[:, :, ::-1]
     except Exception:
         arr[y1:y2, x1:x2][mask > 0] = bg.astype(np.uint8)
     return (x1, y1, x2, y2)
+
+
+def _art_ink(arr: np.ndarray, box: tuple[int, int, int, int]) -> tuple[int, int, int] | None:
+    """Rasm ustidagi yozuv RANGLI bo'lsa (ko'k, qizil...) - shu rang; oq/qora bo'lsa None."""
+    try:
+        import cv2
+
+        H, W = arr.shape[:2]
+        x1, y1, x2, y2 = box
+        sub = arr[y1:y2, x1:x2]
+        if sub.size == 0:
+            return None
+        hsv = cv2.cvtColor(np.ascontiguousarray(sub), cv2.COLOR_RGB2HSV)
+        sat = (hsv[..., 1] > 120) & (hsv[..., 2] > 80)
+        if sat.mean() < 0.12:
+            return None
+        hist = np.bincount((hsv[..., 0][sat] // 10).ravel(), minlength=18)
+        k = int(hist.argmax())
+        same = sat & (hsv[..., 0] // 10 == k)
+        share = same.mean()
+        p = 14
+        ring = np.concatenate([
+            arr[max(0, y1 - p):y1, x1:x2].reshape(-1, 3), arr[y2:min(H, y2 + p), x1:x2].reshape(-1, 3),
+            arr[y1:y2, max(0, x1 - p):x1].reshape(-1, 3), arr[y1:y2, x2:min(W, x2 + p)].reshape(-1, 3)])
+        if len(ring) >= 20:
+            rh = cv2.cvtColor(ring.reshape(1, -1, 3), cv2.COLOR_RGB2HSV)[0]
+            rshare = ((rh[:, 1] > 120) & (rh[:, 2] > 80) & (rh[:, 0] // 10 == k)).mean()
+            if rshare > share * 0.5:
+                return None                      # bu rang fonning o'zida ham ko'p - yozuv rangi emas
+        if share < 0.08:
+            return None
+        return tuple(int(v) for v in np.median(sub[same], axis=0))
+    except Exception:
+        return None
 
 
 def _foreign_sfx(original: str) -> bool:
@@ -1211,6 +1282,14 @@ def _is_sfx(item: dict, page_line_h: float | None, image_h: int) -> bool:
     if page_line_h and lh >= page_line_h * 2.0:
         return True
     return lh >= max(90, image_h * 0.06) and letters <= 8
+
+
+def _lama_ready() -> bool:
+    try:
+        import lama
+        return lama.available()
+    except Exception:
+        return False
 
 
 def _same_text(a: str, b: str) -> bool:
@@ -1378,6 +1457,9 @@ def _draw_job(out: Image.Image, draw, job, off: tuple[int, int]) -> None:
         region = np.asarray(out.crop(ab).convert("L"))
         bright = region.mean() > 140 if region.size else True
         fg, st = ((20, 20, 20), (255, 255, 255)) if bright else ((255, 255, 255), (0, 0, 0))
+        if bg_color is not None:                 # rangli asl yozuv (art_ink) - tarjima ham shu rangda
+            fg = tuple(bg_color)
+            st = (255, 255, 255) if sum(fg) / 3 < 150 else (0, 0, 0)
         _draw_block(draw, box, text, fg, max_size=extra, stroke=st, pad=2)
     else:
         _draw_sfx_label(draw, box, text, W, H, extra or 40)
@@ -1459,10 +1541,17 @@ def render_translation(image_bytes: bytes, translations: list[dict], quality: in
             # "두" -> "IKKI", "찰방" -> "SHAMPAN": tovush so'z deb tarjima qilinardi (foydalanuvchi
             # skrinshotlari) - qisqa ingliz bo'lmagan yozuv joyida, tarjimasiz qoladi.
             continue
-        if _is_sfx(item, page_line_h, H):
+        big = _is_sfx(item, page_line_h, H)
+        if big:
             if FONT_STYLES and _same_text(item.get("original") or "", uzbek_text):
                 continue                  # "MM!" -> "MM!": takror izoh yozilmaydi, asl yozuv qoladi
-            if not (FONT_STYLES and _sfx_in_bubble(arr, box, line_h)):
+            # KATTA YOZUV O'RNIGA TARJIMA (2026-10-02, foydalanuvchi: "AH!", "GET LOST!!", "NO WAY!!",
+            # "TOP-UP" joyida qolib, ostiga mayda izoh yozilgan - xato deb topildi). Pufakchada, tekis
+            # fonda va (LaMa modeli bo'lsa) rasm ustida ham asl yozuv o'chirilib, tarjima shu joyga
+            # shu kattalikda yoziladi. Faqat model yo'q bo'lsa rasm ustidagi effekt avvalgidek qoladi.
+            replace = FONT_STYLES and (_sfx_in_bubble(arr, box, line_h)
+                                       or _flat_bg(arr, box) is not None or _lama_ready())
+            if not replace:
                 jobs.append(("sfx", box, None, uzbek_text, line_h))
                 tboxes.append(box)
                 continue
@@ -1476,7 +1565,7 @@ def render_translation(image_bytes: bytes, translations: list[dict], quality: in
             sys_ink = _system_ink(arr, box, bg_color)
             if sys_ink:
                 # naqshli fon saqlanadi: faqat harflar o'chiriladi, o'z shriftida yoziladi
-                area = _inpaint_text(arr, box, glow=True)
+                area = _inpaint_text(arr, box, glow=True, solid=big)
                 jobs.append(("system", area, bg_color, uzbek_text, max_size, sys_ink, angle))
                 tboxes.append(box)
                 continue
@@ -1542,7 +1631,8 @@ def render_translation(image_bytes: bytes, translations: list[dict], quality: in
             tboxes.append(box)
         else:
             flat = _flat_bg(arr, box) if FONT_STYLES else None
-            area = _inpaint_text(arr, box)
+            art_ink = _art_ink(arr, box) if FONT_STYLES and flat is None else None
+            area = _inpaint_text(arr, box, solid=big)
             if flat is not None:
                 # tekis fondagi yozuv (kontur uzuq pufakcha) - oddiy pufakcha matni kabi:
                 # komiks shrifti, konturisiz, fon rangiga mos rang. Yozish qutisi tekis hudud
@@ -1574,7 +1664,7 @@ def render_translation(image_bytes: bytes, translations: list[dict], quality: in
                 jobs.append(("flat", area, flat, uzbek_text, max_size, angle))
                 tboxes.append(box)
             else:
-                jobs.append(("art", area, None, uzbek_text, max_size, angle))
+                jobs.append(("art", area, art_ink, uzbek_text, max_size, angle))
                 tboxes.append(box)
 
     if FONT_STYLES:

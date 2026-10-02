@@ -32,6 +32,18 @@ jobs:
         run: |
           curl -fsSL -o /tmp/ds.zip "https://dl.dafont.com/dl/?f=digital_strip"
           unzip -oj /tmp/ds.zip digistrip.ttf -d assets/fonts
+      - name: LaMa modeli (rasm ustidagi yozuvni tozalash - keshdan)
+        id: lama
+        uses: actions/cache@v4
+        with:
+          path: assets/models
+          key: lama-fp32-v1
+      - name: LaMa modelini yuklash
+        if: steps.lama.outputs.cache-hit != 'true'
+        continue-on-error: true
+        run: |
+          mkdir -p assets/models
+          curl -fsSL -o assets/models/lama_fp32.onnx "https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx"
       - name: Bot
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}

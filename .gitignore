@@ -10,3 +10,4 @@ hidden-launch.vbs
 setup-local.ps1
 phone/
 .env
+assets/models/
