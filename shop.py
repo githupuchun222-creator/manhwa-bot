@@ -925,6 +925,44 @@ async def enqueue_order(context, order: dict, charged: bool, daily: bool = False
     await B._queue.put(job)
 
 
+# YARIMDA QOLGAN ISHLAR (2026-10-02, foydalanuvchi: "botni yangilab gin da, jarayondagilarni
+# davom ettir"): bot qayta ishga tushsa (kod yangilandi, quvvat o'chdi, server almashdi) navbatdagi
+# va bajarilayotgan buyurtmalar yo'qolib ketmasin - fayllar Telegram'da saqlanadi, shuning uchun
+# ular qaytadan navbatga qo'yiladi. Hisobdan QAYTA yechilmaydi (charged/daily/bal = False).
+RESUME_MAX_AGE = int(os.getenv("RESUME_MAX_AGE", str(6 * 3600)))   # bundan eski ish tiklanmaydi
+RESUME_MAX = int(os.getenv("RESUME_MAX", "20"))
+
+
+def unfinished(now: float | None = None) -> list[dict]:
+    now = now or time.time()
+    out = [o for o in _data().get("orders", {}).values()
+           if o.get("status") in (ST_QUEUED, ST_WORK) and o.get("files")
+           and now - max(o.get("created", 0), o.get("started", 0)) < RESUME_MAX_AGE]
+    return sorted(out, key=lambda o: o.get("created", 0))[:RESUME_MAX]
+
+
+async def resume_unfinished(context) -> int:
+    """Qayta ishga tushganda chaqiriladi: yarimda qolgan buyurtmalarni navbatga qaytaradi."""
+    jobs = unfinished()
+    done = 0
+    for o in jobs:
+        try:
+            await context.bot.send_message(
+                o["uid"], f"\U0001f504 Bot yangilandi - <b>{o['ref']}</b> tarjimasi qaytadan "
+                          "boshlanmoqda. Hisobingizdan qayta yechilmaydi.", parse_mode="HTML")
+        except TelegramError:
+            pass
+        try:
+            await enqueue_order(context, o, charged=False, daily=False, bal=False)
+            done += 1
+        except TelegramError as exc:
+            logger.warning("%s davom ettirilmadi: %s", o["ref"], exc)
+            _set_order(o["ref"], status=ST_FAIL)
+    if done:
+        _log(0, f"qayta ishga tushish: {done} ta ish davom ettirildi")
+    return done
+
+
 async def _user_cancel(update: Update, context, ref: str) -> None:
     uid = update.effective_user.id
     o = get_order(ref)

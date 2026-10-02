@@ -13,6 +13,8 @@ import logging
 import os
 import threading
 import time
+from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 from telegram import Update
@@ -28,6 +30,10 @@ GATE_KEY = os.environ["GATE_KEY"]
 IDLE_EXIT = int(os.getenv("IDLE_EXIT", "300"))        # shuncha soniya ish bo'lmasa - o'chadi
 MAX_LIFE = int(os.getenv("MAX_LIFE", str(5 * 3600)))  # GitHub chegarasi 6 soat
 POLL_EVERY = 1.5
+# YUMSHOQ QAYTA ISHGA TUSHIRISH (2026-10-02): kod yangilangach shu fayl yaratiladi -
+# runner ishini TUGATIB chiqadi, keyin uni ko'targan skript (run-local.ps1 / run4.sh)
+# darhol yangi kod bilan qaytadan yoqadi. Foydalanuvchining bobi uzilib qolmaydi.
+RESTART_FLAG = Path(__file__).with_name("restart.flag")
 # UCH DARAJA (2026-10-02): noutbuk RUNNER_ROLE=primary, telefon RUNNER_ROLE=phone, GitHub - backup.
 # Yuqori daraja tirik ekan darvoza pastdagiga ish bermaydi (x-retire): GitHub nusxasi o'chadi,
 # telefon esa KUTISH holatiga o'tadi (o'chmaydi) va noutbuk jim bo'lishi bilan o'zi davom etadi.
@@ -72,6 +78,13 @@ async def main() -> None:
     await app.start()
     worker = asyncio.create_task(bot._queue_worker())
     log.info("Bot uyg'ondi: @%s", app.bot.username)
+    if bot.shop.ENABLED:          # yarimda qolgan tarjimalar davom ettiriladi
+        try:
+            n = await bot.shop.resume_unfinished(SimpleNamespace(bot=app.bot))
+            if n:
+                log.info("Yarimda qolgan %d ta ish navbatga qaytarildi", n)
+        except Exception as exc:
+            log.warning("Yarimda qolgan ishlar tiklanmadi: %s", exc)
 
     last_activity = time.time()
     headers = {"x-key": GATE_KEY}
@@ -81,7 +94,8 @@ async def main() -> None:
     last_ok = time.time()
     async with httpx.AsyncClient(timeout=30) as c:
         while True:
-            old = retired or time.time() - started > MAX_LIFE
+            old = (retired or time.time() - started > MAX_LIFE
+                   or RESTART_FLAG.exists())
             try:
                 # retire=1: gate bizni "ishlamayapti" deb biladi va kerak bo'lsa yangisini yoqadi
                 r = await c.post(f"{GATE_URL}/pending", headers=headers,
@@ -141,7 +155,11 @@ async def main() -> None:
     worker.cancel()
     await app.stop()
     await app.shutdown()
-    log.info("Ish yo'q - bot uxlashga ketdi")
+    if RESTART_FLAG.exists():
+        RESTART_FLAG.unlink(missing_ok=True)
+        log.info("Ish tugadi - yangi kod bilan qayta ishga tushiriladi")
+    else:
+        log.info("Ish yo'q - bot uxlashga ketdi")
 
 
 if __name__ == "__main__":
