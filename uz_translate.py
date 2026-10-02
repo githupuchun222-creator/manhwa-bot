@@ -467,6 +467,20 @@ LLM_TIMEOUT = 90
 # rejimi sof tarjimadan barqarorroq. thinkingLevel=minimal: 28 s -> ~4-18 s (kechqurun
 # serverlar band, 503 ham beradi - keyingi model, so'ng Google).
 GEMINI_KEY = os.getenv("GEMINI_API_KEY", "")
+# PROKSI (2026-10-02, ilova uchun): kalit ilovaning ichida saqlanmaydi - so'rov kichik Cloudflare
+# xizmatiga ketadi (manhwa-app/api), kalitni o'sha qo'shadi. GEMINI_PROXY_URL bo'lsa kalit kerak emas.
+GEMINI_PROXY = os.getenv("GEMINI_PROXY_URL", "").rstrip("/")
+GEMINI_PROXY_KEY = os.getenv("GEMINI_PROXY_KEY", "")
+if GEMINI_PROXY and not GEMINI_KEY:
+    GEMINI_KEY = "proxy"
+_GEMINI_BASE = GEMINI_PROXY or "https://generativelanguage.googleapis.com"
+
+
+def _gemini_headers(key: str) -> dict:
+    if GEMINI_PROXY:
+        return {"x-app-key": GEMINI_PROXY_KEY, "content-type": "application/json",
+                "user-agent": "manhwa-app/1.0"}
+    return {"x-goog-api-key": key, "content-type": "application/json"}
 # LIMITNI KO'PAYTIRISH (2026-10-01): bepul limit har LOYIHA (kalit) va har MODEL uchun
 # alohida kunlik: 3.5-flash 20, 3.5-flash-lite 500, 3.1-flash-lite 500 (429 javobidan).
 # Shuning uchun: bir nechta kalit (vergul bilan, har biri boshqa Google akkaunti/loyihasi)
@@ -679,9 +693,9 @@ def _gemini_text(system: str, user: str) -> str | None:
                                          "thinkingConfig": {"thinkingLevel": level or "minimal"}},
                 }
             req = urllib.request.Request(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                f"{_GEMINI_BASE}/v1beta/models/{model}:generateContent",
                 data=json.dumps(payload).encode("utf-8"),
-                headers={"x-goog-api-key": key, "content-type": "application/json"})
+                headers=_gemini_headers(key))
             try:
                 with urllib.request.urlopen(req, timeout=60) as r:
                     data = json.loads(r.read().decode("utf-8"))
@@ -799,9 +813,9 @@ def _gemini(english: list[str], drafts: list[str]) -> list[str] | None:
                                          "thinkingConfig": {"thinkingLevel": level or "minimal"}},
                 }
             req = urllib.request.Request(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                f"{_GEMINI_BASE}/v1beta/models/{model}:generateContent",
                 data=json.dumps(payload).encode("utf-8"),
-                headers={"x-goog-api-key": key, "content-type": "application/json"})
+                headers=_gemini_headers(key))
             try:
                 with urllib.request.urlopen(req, timeout=GEMINI_TIMEOUT) as r:
                     data = json.loads(r.read().decode("utf-8"))

@@ -45,19 +45,33 @@ def _get():
     return _session
 
 
+def _infer(x: np.ndarray, m: np.ndarray) -> np.ndarray | None:
+    """Modelni ishga tushiradi. Ilovada (Android) onnxruntime Python paketi yo'q - u yerda
+    `ort_backend` (ONNX Runtime Java) ishlatiladi; botda - odatdagi onnxruntime sessiyasi."""
+    try:
+        import ort_backend
+    except ImportError:
+        ort_backend = None
+    if ort_backend is not None:
+        return ort_backend.run(str(MODEL), x, {"mask": m})[0]
+    sess = _get()
+    if sess is None:
+        return None
+    return sess.run(None, {"image": x, "mask": m})[0][0]
+
+
 def _run(crop: np.ndarray, mask: np.ndarray) -> np.ndarray | None:
     """crop: HxWx3 uint8 (RGB), mask: HxW bool. Qaytaradi: shu o'lchamdagi to'ldirilgan rasm."""
     import cv2
 
-    sess = _get()
-    if sess is None:
-        return None
     h, w = mask.shape
     img = cv2.resize(crop, (SIZE, SIZE), interpolation=cv2.INTER_AREA if max(h, w) > SIZE else cv2.INTER_CUBIC)
     m = cv2.resize(mask.astype(np.uint8), (SIZE, SIZE), interpolation=cv2.INTER_NEAREST)
     m = cv2.dilate(m, np.ones((3, 3), np.uint8))
     x = img.astype(np.float32).transpose(2, 0, 1)[None] / 255.0
-    out = sess.run(None, {"image": x, "mask": m.astype(np.float32)[None, None]})[0][0]
+    out = _infer(x, m.astype(np.float32)[None, None])
+    if out is None:
+        return None
     if float(out.max()) <= 1.5:                    # ba'zi eksportlar 0..1 qaytaradi
         out = out * 255.0
     out = np.clip(out.transpose(1, 2, 0), 0, 255).astype(np.uint8)

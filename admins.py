@@ -227,10 +227,35 @@ def add_paid(user_id: int, days: int | None = None) -> float:
     """Obuna qo'shadi/uzaytiradi: tugamagan bo'lsa - tugash sanasiga, aks holda hozirdan +N kun."""
     data = _load()
     subs = _subs(data)
+    active = float(subs.get(str(user_id), 0)) > _time.time()
     start = max(_time.time(), float(subs.get(str(user_id), 0)))
     subs[str(user_id)] = start + (days or SUB_DAYS) * 86400
+    # OBUNA TURI (2026-10-02): ilova hisobi faqat OYLIK obunachiga beriladi. Haftalik (<=10 kun) -
+    # "week"; faol oylik obunaga hafta qo'shilsa ham oylik bo'lib qoladi.
+    kinds = data.setdefault("subk", {})
+    week = bool(days) and days <= 10
+    if not (week and active and kinds.get(str(user_id)) == "month"):
+        kinds[str(user_id)] = "week" if week else "month"
     _save(data)
     return subs[str(user_id)]
+
+
+def sub_kind(user_id: int) -> str:
+    """'month' | 'week' | '' (obuna yo'q yoki turi noma'lum).
+
+    Tur yozilmagan eski obunalar: qolgan muddat 7 kundan ko'p bo'lsa - aniq oylik (haftalik bunday
+    uzun bo'lmaydi); aks holda noma'lum - taxmin qilinmaydi (egasi /oylik bilan qayta bersa aniqlanadi).
+    """
+    if not is_paid(user_id):
+        return ""
+    kind = _load().get("subk", {}).get(str(user_id))
+    if kind:
+        return kind
+    return "month" if sub_until(user_id) - _time.time() > 7 * 86400 else ""
+
+
+def is_monthly(user_id: int) -> bool:
+    return sub_kind(user_id) == "month"
 
 
 def remove_paid(user_id: int) -> bool:
@@ -239,6 +264,7 @@ def remove_paid(user_id: int) -> bool:
     if str(user_id) not in subs:
         return False
     del subs[str(user_id)]
+    data.get("subk", {}).pop(str(user_id), None)
     _save(data)
     return True
 
