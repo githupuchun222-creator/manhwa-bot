@@ -282,8 +282,9 @@ async def on_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.effective_message.reply_text(
             "✍️ Paket beriladigan odamning @username'ini yoki ID raqamini yuboring - "
             "keyin paketni tanlaysiz.\nBekor qilish: /start" if admins.PACKS_ON else
-            "✍️ Obunachining @username'ini yoki ID raqamini yuboring - unga hozirdan boshlab "
-            f"{admins.SUB_DAYS} kunlik obuna beriladi.\nBekor qilish: /start")
+            "✍️ Obunachining @username'ini yoki ID raqamini yuboring - "
+            f"keyin muddatni tanlaysiz ({admins.SUB_WEEK_DAYS} yoki {admins.SUB_DAYS} kun)."
+            "\nBekor qilish: /start")
         return
     if what == "qoida":
         if not admins.is_admin(update.effective_user.id):
@@ -1653,7 +1654,13 @@ async def handle_other(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await msg.reply_text(f"💰 {target} uchun paketni tanlang:",
                                  reply_markup=InlineKeyboardMarkup([_pack_buttons(target)]))
             return
-        await _set_paid(context, target, True, message=msg)
+        await msg.reply_text(
+            f"💳 {target} uchun obuna muddatini tanlang:",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton(f"🔥 1 hafta ({SUB_WEEK_PRICE})",
+                                       callback_data=f"paidw:{target}")],
+                 [InlineKeyboardButton(f"✅ 1 oy ({SUB_PRICE})",
+                                       callback_data=f"paid:{target}")]]))
         return
     if msg.text and context.user_data.pop("await_rule", False) and admins.is_admin(user_id):
         n = admins.add_rule(msg.text.strip()[:300])
