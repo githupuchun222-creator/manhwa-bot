@@ -12,3 +12,5 @@ phone/
 .env
 assets/models/
 restart.flag
+admins.json.dirty
+restart.flag

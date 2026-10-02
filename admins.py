@@ -20,9 +20,24 @@ def _remote(method: str, body: bytes | None = None) -> dict | None:
         return json.loads(r.read().decode("utf-8") or "null")
 
 
+# DARVOZAGA YOZILMAGAN HOLAT (2026-10-02): darvoza yozishni qabul qilmay qolsa (D1 kunlik limiti),
+# mahalliy fayl darvozadagi nusxadan YANGIROQ bo'ladi. Belgi fayli shuni bildiradi: u turgan paytda
+# qayta ishga tushish eski nusxani o'qib, yangi holatni (buyurtmalar, obuna, hisob) bosib ketmaydi.
+_DIRTY = ADMINS_FILE.with_name(ADMINS_FILE.name + ".dirty")
+
+
 def pull_remote() -> None:
     """Ishga tushganda: saqlangan ro'yxatni Cloudflare'dan olib, faylga yozadi."""
     if not ADMINS_URL:
+        return
+    if _DIRTY.exists() and ADMINS_FILE.exists():
+        logging.getLogger(__name__).warning("Mahalliy holat darvozadagidan yangiroq - o'qilmaydi, yozishga urinamiz")
+        try:
+            with open(ADMINS_FILE, "r", encoding="utf-8") as f:
+                _remote("PUT", f.read().encode("utf-8"))
+            _DIRTY.unlink(missing_ok=True)
+        except Exception as exc:
+            logging.getLogger(__name__).warning("Holat darvozaga hali yozilmadi: %s", exc)
         return
     try:
         data = _remote("GET")
@@ -48,8 +63,14 @@ def _save(data: dict) -> None:
     if ADMINS_URL:
         try:
             _remote("PUT", json.dumps(data).encode("utf-8"))
+            if _DIRTY.exists():
+                _DIRTY.unlink(missing_ok=True)
         except Exception as exc:
             logging.getLogger(__name__).warning("Adminlar ro'yxati saqlanmadi: %s", exc)
+            try:
+                _DIRTY.touch()
+            except OSError:
+                pass
 
 
 # PUBLIC_BOT=1 (2026-09-30, faqat @Manhwatarjima1_bot - foydalanuvchi: "hamma foydalana

@@ -18,6 +18,7 @@ from types import SimpleNamespace
 
 import httpx
 from telegram import Update
+from telegram.error import Conflict
 
 import admins
 import bot
@@ -40,6 +41,12 @@ RESTART_FLAG = Path(__file__).with_name("restart.flag")
 # Ikkitasi bir vaqtda xabar olmaydi: pastdagi tugatguncha yuqoridagi kutadi (x-wait).
 ROLE = os.getenv("RUNNER_ROLE", "backup")
 STANDBY_EVERY = 5
+# DARVOZASIZ REJIM (2026-10-02): darvoza D1 bazasiga yozadi; hisobning bepul kunlik yozish limiti tugasa
+# (kuniga 100 000 qator, 05:00 da tiklanadi) u na xabarni saqlay oladi, na bera oladi - bot soatlab
+# "kar" bo'lib qolardi. Endi darvoza GATE_DOWN_AFTER soniya javob bermasa, ASOSIY runner (noutbuk)
+# webhookni o'chirib, xabarlarni to'g'ridan-to'g'ri Telegram'dan oladi (Telegram ularni saqlab turadi).
+# Darvoza tiklangach bu rejim o'zi tugaydi; webhookni darvozaning o'zi (/tick) qayta o'rnatadi.
+GATE_DOWN_AFTER = 20
 # Ish boshqa qurilmaga o'tganda FAQAT egasiga xabar (foydalanuvchilar hech narsa ko'rmaydi)
 PLACE = {"primary": "💻 noutbuk", "phone": "📱 telefon", "backup": "☁️ GitHub",
          "none": "-"}
@@ -92,10 +99,21 @@ async def main() -> None:
     waiting = False                    # asosiy: zaxira hali ishini tugatmagan
     standby = want_standby = False     # telefon: noutbuk ishlayapti - kutish holati
     last_ok = time.time()
+    direct = False                     # darvozasiz rejim: xabarlar to'g'ridan-to'g'ri Telegram'dan
+    down_since = None
+    tg_offset = None
+
+    async def tell_owner(text: str) -> None:
+        try:
+            await app.bot.send_message(bot.OWNER_ID, text + "\n(Bu xabar faqat sizga ko‘rinadi.)")
+        except Exception as exc:
+            log.warning("Egasiga xabar yuborilmadi: %s", exc)
+
     async with httpx.AsyncClient(timeout=30) as c:
         while True:
             old = (retired or time.time() - started > MAX_LIFE
                    or RESTART_FLAG.exists())
+            gate_ok = False
             try:
                 # retire=1: gate bizni "ishlamayapti" deb biladi va kerak bo'lsa yangisini yoqadi
                 r = await c.post(f"{GATE_URL}/pending", headers=headers,
@@ -120,6 +138,11 @@ async def main() -> None:
                     except Exception as exc:
                         log.warning("Egasiga xabar yuborilmadi: %s", exc)
                 now_wait = r.headers.get("x-wait") == "1"
+                if direct:
+                    # Darvozasiz ishlab turgan edik: MAHALLIY holat yangiroq - uni darvozaga yozamiz
+                    # (aks holda pastdagi "qayta o'qish" eski nusxa bilan yangisini bosib ketardi)
+                    await asyncio.to_thread(lambda: admins._save(admins._load()))
+                    last_ok = time.time()
                 # Boshqa runner ishlagan (yoki bu qurilma uxlab turgan) bo'lsa holat o'zgargan - qayta o'qiymiz
                 resumed = standby and not above
                 if resumed:
@@ -131,12 +154,47 @@ async def main() -> None:
                     log.info("Holat darvozadan qayta o'qildi")
                 waiting = now_wait
                 last_ok = time.time()
+                gate_ok = True
             except Exception as exc:
-                log.warning("Gate'dan xabar olinmadi: %s", exc)
+                if not direct:                     # darvozasiz rejimda har so'rovda takrorlanmasin
+                    log.warning("Gate'dan xabar olinmadi: %s", exc)
                 items = []
+            if gate_ok:
+                down_since = None
+                if direct:
+                    direct = False
+                    log.info("Darvoza tiklandi - odatdagi rejimga qaytildi")
+                    await tell_owner("✅ Darvoza tiklandi — bot odatdagi rejimga qaytdi.")
+            elif ROLE == "primary" and not old:
+                down_since = down_since or time.time()
+                if not direct and time.time() - down_since > GATE_DOWN_AFTER:
+                    try:
+                        await app.bot.delete_webhook(drop_pending_updates=False)
+                        direct, tg_offset = True, None
+                        log.warning("Darvoza %d s javob bermadi - xabarlar to'g'ridan-to'g'ri Telegram'dan olinadi",
+                                    int(time.time() - down_since))
+                        await tell_owner("⚠️ Darvoza (Cloudflare) javob bermayapti — bot xabarlarni "
+                                         "to‘g‘ridan-to‘g‘ri Telegram’dan olmoqda. Bot ishlayapti.")
+                    except Exception as exc:
+                        log.warning("Darvozasiz rejimga o'tib bo'lmadi: %s", exc)
+            got_direct = False
+            if direct:
+                try:
+                    ups = await app.bot.get_updates(offset=tg_offset, timeout=8, allowed_updates=Update.ALL_TYPES)
+                    for u in ups:
+                        tg_offset = u.update_id + 1
+                        await app.update_queue.put(u)
+                    got_direct = bool(ups)
+                except Conflict:
+                    # webhook qayta o'rnatilgan (darvoza tiklangan) - keyingi aylanishda odatdagi yo'l
+                    direct, down_since = False, None
+                    log.info("Webhook qayta o'rnatilgan - darvozasiz rejim tugadi")
+                except Exception as exc:
+                    log.warning("Telegram'dan xabar olinmadi: %s", exc)
+                    await asyncio.sleep(2)
             for data in items:
                 await app.update_queue.put(Update.de_json(data, app.bot))
-            busy = bool(items) or bool(bot._waiting) or bool(bot._current["job"])
+            busy = bool(items) or got_direct or bool(bot._waiting) or bool(bot._current["job"])
             if busy:
                 last_activity = time.time()
             if not busy and app.update_queue.empty() and (old or time.time() - last_activity > IDLE_EXIT):
@@ -144,7 +202,8 @@ async def main() -> None:
             if want_standby and not standby and not busy and app.update_queue.empty():
                 standby = True
                 log.info("Kutish holati: xabarlarni yuqori darajadagi runner oladi")
-            await asyncio.sleep(STANDBY_EVERY if standby else POLL_EVERY)
+            # darvozasiz rejimda get_updates o'zi 8 s gacha kutadi - qo'shimcha kutish shart emas
+            await asyncio.sleep(0.2 if direct else STANDBY_EVERY if standby else POLL_EVERY)
         try:   # gate darhol bilsin: endi kelgan xabar uchun yangi runner yoqiladi
             await c.post(f"{GATE_URL}/pending", headers=headers,
                          params={"runner": "1", "retire": "1", "role": ROLE})
