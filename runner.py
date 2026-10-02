@@ -47,6 +47,15 @@ STANDBY_EVERY = 5
 # webhookni o'chirib, xabarlarni to'g'ridan-to'g'ri Telegram'dan oladi (Telegram ularni saqlab turadi).
 # Darvoza tiklangach bu rejim o'zi tugaydi; webhookni darvozaning o'zi (/tick) qayta o'rnatadi.
 GATE_DOWN_AFTER = 20
+GATE_PROBE_EVERY = 30          # to'g'ridan-to'g'ri rejimda darvoza shuncha soniyada bir marta so'raladi
+# ASOSIY runner (noutbuk) xabarlarni DOIM to'g'ridan-to'g'ri Telegram'dan oladi: darvozani har 1.5 s da so'rash
+# Cloudflare'ning kunlik 100 000 so'rov limitini tugatib, hisobdagi hamma xizmatni to'xtatib qo'ygan edi.
+# Darvoza faqat GATE_PROBE_EVERY da bir marta so'raladi: "tirikman" belgisi + webhook orqali tushib qolgan xabarlar.
+PREFER_DIRECT = os.getenv("PREFER_DIRECT", "1" if ROLE == "primary" else "0") == "1"
+
+
+class _SkipGate(Exception):
+    """Darvozasiz rejimda bu aylanishda darvoza so'ralmaydi (so'rov limitini tejash)."""
 # Ish boshqa qurilmaga o'tganda FAQAT egasiga xabar (foydalanuvchilar hech narsa ko'rmaydi)
 PLACE = {"primary": "💻 noutbuk", "phone": "📱 telefon", "backup": "☁️ GitHub",
          "none": "-"}
@@ -65,11 +74,17 @@ async def _gate_ready() -> None:
         while True:
             try:
                 r = await c.get(f"{GATE_URL}/status", headers={"x-key": GATE_KEY})
+                if r.status_code != 200:
+                    # Darvoza ishlamayapti (limit tugagan, 429/5xx): kutib o'tirmaymiz - asosiy tsikl
+                    # darvozasiz rejimga o'zi o'tadi. (2026-10-02: shu yerda cheksiz kutib, bot ko'tarilmay qolgan.)
+                    log.warning("Darvoza javob bermayapti (HTTP %s) - kutmasdan ishga tushamiz", r.status_code)
+                    return
                 if "laptop_alive" in r.json():
                     return
                 log.info("Darvoza hali yangilanmagan - kutilmoqda (xabar olinmaydi)")
             except Exception as exc:
-                log.warning("Darvoza holati olinmadi: %s", exc)
+                log.warning("Darvoza holati olinmadi (%s) - kutmasdan ishga tushamiz", exc)
+                return
             await asyncio.sleep(60)
 
 
@@ -102,6 +117,8 @@ async def main() -> None:
     direct = False                     # darvozasiz rejim: xabarlar to'g'ridan-to'g'ri Telegram'dan
     down_since = None
     tg_offset = None
+    last_probe = 0.0                   # darvoza oxirgi marta qachon so'ralgan
+    told_down = False                  # uzilish haqida egasiga aytilganmi (bir uzilishda bir marta)
 
     async def tell_owner(text: str) -> None:
         try:
@@ -115,6 +132,9 @@ async def main() -> None:
                    or RESTART_FLAG.exists())
             gate_ok = False
             try:
+                if direct and time.time() - last_probe < GATE_PROBE_EVERY:
+                    raise _SkipGate()
+                last_probe = time.time()
                 # retire=1: gate bizni "ishlamayapti" deb biladi va kerak bo'lsa yangisini yoqadi
                 r = await c.post(f"{GATE_URL}/pending", headers=headers,
                                  params={"runner": "1", "retire": "1" if old else "0", "role": ROLE,
@@ -139,9 +159,10 @@ async def main() -> None:
                         log.warning("Egasiga xabar yuborilmadi: %s", exc)
                 now_wait = r.headers.get("x-wait") == "1"
                 if direct:
-                    # Darvozasiz ishlab turgan edik: MAHALLIY holat yangiroq - uni darvozaga yozamiz
-                    # (aks holda pastdagi "qayta o'qish" eski nusxa bilan yangisini bosib ketardi)
-                    await asyncio.to_thread(lambda: admins._save(admins._load()))
+                    # To'g'ridan-to'g'ri rejimda MAHALLIY holat asosiy: yozilmay qolgani bo'lsa darvozaga yozamiz;
+                    # pastdagi "qayta o'qish" bu rejimda ishlamasin (eski nusxa yangisini bosib ketardi)
+                    if admins._DIRTY.exists():
+                        await asyncio.to_thread(lambda: admins._save(admins._load()))
                     last_ok = time.time()
                 # Boshqa runner ishlagan (yoki bu qurilma uxlab turgan) bo'lsa holat o'zgargan - qayta o'qiymiz
                 resumed = standby and not above
@@ -157,24 +178,36 @@ async def main() -> None:
                 gate_ok = True
             except Exception as exc:
                 if not direct:                     # darvozasiz rejimda har so'rovda takrorlanmasin
-                    log.warning("Gate'dan xabar olinmadi: %s", exc)
+                    log.warning("Gate'dan xabar olinmadi: %s", str(exc).splitlines()[0][:160])
                 items = []
             if gate_ok:
                 down_since = None
-                if direct:
+                if told_down:
+                    told_down = False
+                    await tell_owner("✅ Darvoza tiklandi.")
+                if direct and not PREFER_DIRECT:
                     direct = False
                     log.info("Darvoza tiklandi - odatdagi rejimga qaytildi")
-                    await tell_owner("✅ Darvoza tiklandi — bot odatdagi rejimga qaytdi.")
             elif ROLE == "primary" and not old:
                 down_since = down_since or time.time()
-                if not direct and time.time() - down_since > GATE_DOWN_AFTER:
+            if ROLE == "primary" and not old and not direct and not waiting and not want_standby:
+                if PREFER_DIRECT and gate_ok:
+                    try:
+                        await app.bot.delete_webhook(drop_pending_updates=False)
+                        direct, tg_offset = True, None
+                        log.info("Xabarlar to'g'ridan-to'g'ri Telegram'dan olinadi (asosiy rejim)")
+                    except Exception as exc:
+                        log.warning("To'g'ridan-to'g'ri rejimga o'tib bo'lmadi: %s", exc)
+                elif down_since and time.time() - down_since > GATE_DOWN_AFTER:
                     try:
                         await app.bot.delete_webhook(drop_pending_updates=False)
                         direct, tg_offset = True, None
                         log.warning("Darvoza %d s javob bermadi - xabarlar to'g'ridan-to'g'ri Telegram'dan olinadi",
                                     int(time.time() - down_since))
-                        await tell_owner("⚠️ Darvoza (Cloudflare) javob bermayapti — bot xabarlarni "
-                                         "to‘g‘ridan-to‘g‘ri Telegram’dan olmoqda. Bot ishlayapti.")
+                        if not told_down:
+                            told_down = True
+                            await tell_owner("⚠️ Darvoza (Cloudflare) javob bermayapti — bot xabarlarni "
+                                             "to‘g‘ridan-to‘g‘ri Telegram’dan olmoqda. Bot ishlayapti.")
                     except Exception as exc:
                         log.warning("Darvozasiz rejimga o'tib bo'lmadi: %s", exc)
             got_direct = False
@@ -186,9 +219,15 @@ async def main() -> None:
                         await app.update_queue.put(u)
                     got_direct = bool(ups)
                 except Conflict:
-                    # webhook qayta o'rnatilgan (darvoza tiklangan) - keyingi aylanishda odatdagi yo'l
-                    direct, down_since = False, None
-                    log.info("Webhook qayta o'rnatilgan - darvozasiz rejim tugadi")
+                    # Webhook qayta o'rnatilgan. Darvoza ishlamayotgan bo'lsa ham uning cron'i buni har daqiqada
+                    # qiladi - shuning uchun rejimdan chiqmaymiz: webhookni yana o'chiramiz va davom etamiz.
+                    # Rejim faqat darvoza haqiqatan javob berganda tugaydi (yuqorida, gate_ok).
+                    try:
+                        await app.bot.delete_webhook(drop_pending_updates=False)
+                        last_probe = 0.0               # darvoza tiklangan bo'lishi mumkin - darhol tekshiramiz
+                    except Exception as exc:
+                        log.warning("Webhookni o'chirib bo'lmadi: %s", exc)
+                        await asyncio.sleep(2)
                 except Exception as exc:
                     log.warning("Telegram'dan xabar olinmadi: %s", exc)
                     await asyncio.sleep(2)

@@ -22,7 +22,6 @@ from telegram.ext import (
 )
 
 import admins
-import appsync
 import bigfile
 import shop
 import broadcast
@@ -580,64 +579,6 @@ async def remove_admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await update.effective_message.reply_text("Bu ID admin emas yoki bot egasini olib bo'lmaydi.")
 
 
-async def app_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/ilova - OYLIK obunachiga ilova uchun login va parol (/ilova parol - yangi parol)."""
-    user = update.effective_user
-    msg = update.effective_message
-    if update.effective_chat.type != "private":
-        await msg.reply_text("Bu buyruqni botning shaxsiy chatida yozing.")
-        return
-    if not appsync.enabled():
-        await msg.reply_text("Ilova hisobi hozircha ulanmagan. Birozdan keyin urinib ko‘ring.")
-        return
-    if not admins.is_monthly(user.id):
-        kind = admins.sub_kind(user.id)
-        text = ("📱 Ilova hisobi faqat <b>oylik obunachilarga</b> beriladi.\n\n"
-                + ("Sizda hozir haftalik obuna bor." if kind == "week" else
-                   "Obunangiz turi aniqlanmadi - adminga yozing." if admins.is_paid(user.id) else
-                   "Sizda hozir obuna yo‘q.")
-                + "\nOylik obuna: /start → 💳 Obuna")
-        await msg.reply_text(text, parse_mode="HTML")
-        return
-    reset = bool(context.args) and context.args[0].lower() in ("parol", "yangi", "reset")
-    res = await asyncio.to_thread(appsync.account, user.id, admins.sub_until(user.id), user.full_name or "", reset)
-    if not res:
-        await msg.reply_text("Ilova serveri javob bermadi. Birozdan keyin qayta urinib ko‘ring: /ilova")
-        return
-    until = _date(admins.sub_until(user.id))
-    if res.get("password"):
-        text = ("📱 <b>Ilova uchun hisobingiz</b>\n\n"
-                f"Login: <code>{html.escape(res['login'])}</code>\n"
-                f"Parol: <code>{html.escape(res['password'])}</code>\n\n"
-                f"Obuna: {until} gacha.\n\n"
-                "Ilovada: Profil → Kirish → shu login va parol.\n"
-                "Botga yuborgan PDF fayllaringiz ilovaning «Tarjima» bo‘limida ro‘yxat bo‘lib chiqadi - "
-                "tanlasangiz, telefonning o‘zida tarjima qilinadi. Faylni ilovaning ichidan ham yuklasa bo‘ladi.\n\n"
-                "⚠️ Parolni hech kimga bermang. Bu xabarni o‘chirib qo‘ysangiz ham bo‘ladi - "
-                "yangi parol: /ilova parol")
-    else:
-        text = ("📱 Ilova hisobingiz allaqachon ochilgan.\n\n"
-                f"Login: <code>{html.escape(res['login'])}</code>\n"
-                f"Obuna: {until} gacha.\n\n"
-                "Parolni unutgan bo‘lsangiz - yangisini oling: /ilova parol")
-    await msg.reply_text(text, parse_mode="HTML")
-
-
-async def _inbox_copy(update: Update) -> None:
-    """Oylik obunachi botga PDF yuborsa - u ilovadagi ro'yxatga ham yoziladi (tarjima odatdagidek davom etadi)."""
-    msg, user = update.effective_message, update.effective_user
-    doc = msg.document if msg else None
-    if not (doc and appsync.enabled() and admins.is_monthly(user.id)):
-        return
-    name = doc.file_name or "fayl.pdf"
-    if not (doc.mime_type == "application/pdf" or name.lower().endswith(".pdf")):
-        return
-    res = await asyncio.to_thread(appsync.inbox_add, user.id, admins.sub_until(user.id), doc.file_id, name,
-                                  doc.file_size or 0)
-    if res and res.get("ok") and not res.get("dup") and not res.get("downloadable", True):
-        logger.info("Ilova ro'yxati: %s 20 MB dan katta - ilova uni botdan ololmaydi", name)
-
-
 LEARN_PAGES = 15          # /organish: namunadan shuncha sahifa o'qiladi
 
 
@@ -799,8 +740,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
     logger.info("QABUL QILINDI: user=%s, tur=%s", user_id, kind)
     admins.remember_user(update.effective_user)
-    if appsync.enabled():
-        asyncio.create_task(_inbox_copy(update))
 
     if not admins.is_allowed(user_id):
         await update.effective_message.reply_text(
@@ -1087,18 +1026,8 @@ async def _set_paid(context, target: int, grant: bool, query=None, message=None,
                         "Endi botdan cheklovsiz foydalanishingiz mumkin - bobning PDF faylini yoki rasmlarini yuboring.")
         except TelegramError:
             text += "\n(unga xabar yetib bormadi - u botga hali /start bosmagan bo'lishi mumkin)"
-        if appsync.enabled() and admins.is_monthly(target):
-            # ilova hisobi bo'lsa muddati yangilanadi; yo'q bo'lsa - foydalanuvchi /ilova bilan oladi
-            try:
-                await context.bot.send_message(
-                    target, "📱 Oylik obunangiz bilan <b>ilovadan</b> ham foydalanishingiz mumkin. "
-                            "Login va parol olish: /ilova", parse_mode="HTML")
-            except TelegramError:
-                pass
     else:
         changed = admins.remove_paid(target)
-        if changed and appsync.enabled():
-            await asyncio.to_thread(appsync.revoke, target)
         text = f"🚫 {who} ({target}) - obuna olib tashlandi." if changed else f"{target} obunachilar ro'yxatida yo'q."
     if query is not None:
         await query.edit_message_text(text)
@@ -1810,7 +1739,6 @@ def _build_app(token: str) -> Application:
     app.add_handler(CommandHandler("removeadmin", remove_admin_cmd))
     app.add_handler(CommandHandler("qoida", rules_cmd))
     app.add_handler(CommandHandler(["organish", "learn"], learn_cmd))
-    app.add_handler(CommandHandler(["ilova", "app"], app_cmd))
     app.add_handler(CommandHandler(["oylik", "haftalik", "ruxsat", "paket"], paid_cmd))
     app.add_handler(CommandHandler(["oylikolish", "ruxsatolish", "paketolish"], paid_cmd))
     app.add_handler(CommandHandler("qoidaochir", remove_rule_cmd))
