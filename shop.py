@@ -25,6 +25,7 @@ from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
 import admins
+import broadcast
 
 logger = logging.getLogger(__name__)
 
@@ -624,6 +625,7 @@ async def on_text(update: Update, context) -> bool:
     text = (msg.text or "").strip()
     if text in MENU_BUTTONS:
         admins.remember_user(update.effective_user)
+        context.user_data.pop("await_bc", None)       # menyuga o'tdi - fikr kutilmaydi
         btn = LEGACY_BUTTONS.get(text, text)
         if btn == BTN_ORDER:
             await order_start(update, context)
@@ -635,6 +637,8 @@ async def on_text(update: Update, context) -> bool:
             await show_help(update, context)
         elif btn == BTN_ADMIN:
             await admin_panel(update, context)
+        return True
+    if context.user_data.get("await_bc") and await broadcast.user_reply(update, context, text):
         return True
     if context.user_data.get("await_inq"):
         context.user_data.pop("await_inq")
@@ -662,6 +666,19 @@ async def on_text(update: Update, context) -> bool:
 async def on_file(update: Update, context) -> bool:
     """Seans ochiq bo'lsa - fayl bobga qo'shiladi. True - navbatga qo'yilmaydi."""
     uid = update.effective_user.id
+    adm = context.user_data.get("await_adm")
+    if adm and adm[0] == "bcast" and admins.is_superadmin(uid):
+        msg = update.effective_message
+        if not msg.photo:
+            await msg.reply_text("E'longa faqat RASM qo'shish mumkin - rasm yoki matn yuboring.\n"
+                                 "Bekor qilish (va faylni tarjima qilish): /start")
+            return True
+        context.user_data.pop("await_adm", None)
+        draft = broadcast.new_draft((msg.caption or "").strip(), msg.photo[-1].file_id)
+        context.user_data["bcdraft"] = draft
+        body, markup = broadcast.draft_preview(draft)
+        await msg.reply_text(body, parse_mode="HTML", reply_markup=markup)
+        return True
     draft = _draft(uid)
     if not draft or draft.get("step") != "upload":
         return False                       # seans yo'q - tezkor yo'l (bot.handle_photo) ishlaydi
@@ -1069,8 +1086,10 @@ async def admin_panel(update: Update, context, edit=False) -> None:
                f"(jami {sum(n for _, n in bals)} ta bob)\n" if admins.PACKS_ON else
                f"💳 Faol obunachilar: <b>{subs}</b>\n") +
             f"👤 Tanish foydalanuvchilar: <b>{len(data.get('users', {}))}</b>\n"
-            f"📝 So‘rovlar: <b>{len(data.get('inquiries', {}))}</b>")
-    rows = [[_ib("📋 Buyurtmalar", "sh:aorders"), _ib("👤 Foydalanuvchi", "sh:auser")],
+            f"📝 So‘rovlar: <b>{len(data.get('inquiries', {}))}</b>\n"
+            f"📢 Xabar boradi: <b>{len(broadcast.targets())}</b> ta odamga")
+    rows = [[_ib("📢 Hammaga xabar", "sh:abc"), _ib("📊 E‘lonlar", "sh:abclist")],
+            [_ib("📋 Buyurtmalar", "sh:aorders"), _ib("👤 Foydalanuvchi", "sh:auser")],
             [_ib("💰 Paketlar" if admins.PACKS_ON else "📅 Obunalar", "m:do:paid"),
              _ib("👥 Adminlar", "m:do:admins")],
             [_ib("📝 Qoidalar", "m:qoidalar"), _ib("📜 Jurnal", "sh:alog")],
@@ -1087,6 +1106,39 @@ async def admin_button(update: Update, context, parts: list[str]) -> None:
     back = [_ib("⬅️ Panel", "sh:apanel")]
     if act == "apanel":
         await admin_panel(update, context, edit=True)
+    elif act == "abc":                                   # 📢 yangi e'lon
+        context.user_data["await_adm"] = ("bcast", "")
+        await update.effective_message.reply_text(
+            "📢 <b>Hammaga xabar</b>\n\nYubormoqchi bo‘lgan xabarni yozing "
+            "(xohlasangiz rasm yuboring - izohi xabar bo‘ladi).\n"
+            "Yuborishdan oldin ko‘rinishini ko‘rsataman.\n\nBekor qilish: /start",
+            parse_mode="HTML")
+    elif act in ("abcgo", "abctest"):                    # tasdiq / o‘ziga sinov
+        draft = context.user_data.get("bcdraft")
+        if not draft or len(parts) < 3 or parts[2] != draft.get("n"):
+            await update.effective_message.reply_text(
+                "Bu tugma eskirgan - 📢 Hammaga xabar dan qaytadan boshlang.")
+            return
+        if act == "abctest":
+            await broadcast.send_one(context, uid, dict(draft, ref="E-SINOV"))
+            await update.effective_message.reply_text(
+                "👁 Yuqorida - xabarning ko‘rinishi (faqat sizga). Yuborish uchun "
+                "✅ Yuborish tugmasini bosing.")
+            return
+        context.user_data.pop("bcdraft", None)           # ikki marta yuborilmasin
+        _log(uid, "hammaga xabar yubordi")
+        await broadcast.start_send(update, context, draft)
+    elif act == "abclist":
+        text, markup = broadcast.list_text()
+        await _reply(update, text, markup, edit=True)
+    elif act == "abcv":
+        view = broadcast.view_text(parts[2])
+        if view:
+            await _reply(update, view[0], view[1], edit=True)
+    elif act == "abcr":                                  # fikr yozgan odamga javob
+        context.user_data["await_adm"] = ("bcreply", parts[2])
+        await update.effective_message.reply_text(
+            f"✍️ {parts[2]} ga javobingizni yozing (u botdan xabar oladi):")
     elif act == "aorders":
         flt = parts[2] if len(parts) > 2 else "all"
         orders = sorted(_data().get("orders", {}).values(), key=lambda o: -o["created"])
@@ -1168,7 +1220,20 @@ async def _admin_text(update: Update, context, text: str) -> bool:
     kind, arg = context.user_data.pop("await_adm")
     if not admins.is_superadmin(uid):
         return False
-    if kind == "note":
+    if kind == "bcast":
+        draft = broadcast.new_draft(text)
+        context.user_data["bcdraft"] = draft
+        body, markup = broadcast.draft_preview(draft)
+        await update.effective_message.reply_text(body, parse_mode="HTML", reply_markup=markup)
+    elif kind == "bcreply":
+        try:
+            await context.bot.send_message(
+                int(arg), f"✉️ <b>Bot egasidan javob</b>\n\n{html.escape(text[:3000])}",
+                parse_mode="HTML")
+            await update.effective_message.reply_text(f"✅ Javob {arg} ga yuborildi.")
+        except TelegramError as exc:
+            await update.effective_message.reply_text(f"Yuborilmadi: {exc}")
+    elif kind == "note":
         _set_order(arg, anote=text[:500])
         _log(uid, f"izoh: {text}", arg)
         await update.effective_message.reply_text(f"🗒 {arg} ga izoh yozildi.")

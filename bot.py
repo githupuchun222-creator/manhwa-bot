@@ -24,6 +24,7 @@ from telegram.ext import (
 import admins
 import bigfile
 import shop
+import broadcast
 import pdf_utils
 import uz_translate
 from config import BASE_DIR, BOT_SUFFIX, BOT_TOKEN, OWNER_ID
@@ -119,6 +120,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data.pop("await_rule", None)
     context.user_data.pop("await_sub", None)
     context.user_data.pop("await_feedback", None)
+    context.user_data.pop("await_bc", None)
     admins.remember_user(update.effective_user)
     if not admins.is_allowed(user_id):
         await update.effective_message.reply_text(
@@ -1711,7 +1713,7 @@ TG_API_BASE = os.getenv("TG_API_BASE", "").rstrip("/")
 
 
 def _build_app(token: str) -> Application:
-    shop.B = sys.modules[__name__]           # buyurtma moduli navbat/konveyerdan foydalanadi
+    shop.B = broadcast.B = sys.modules[__name__]           # buyurtma moduli navbat/konveyerdan foydalanadi
     builder = Application.builder()
     if TG_API_BASE:
         builder = builder.base_url(f"{TG_API_BASE}/bot").base_file_url(f"{TG_API_BASE}/file/bot")
@@ -1757,6 +1759,7 @@ def _build_app(token: str) -> Application:
     app.add_handler(CallbackQueryHandler(on_queue_button, pattern=r"^qcancel:"))
     app.add_handler(CallbackQueryHandler(on_menu_button, pattern=r"^m:"))
     app.add_handler(CallbackQueryHandler(shop.on_button, pattern=r"^sh:"))
+    app.add_handler(CallbackQueryHandler(broadcast.on_user_button, pattern=r"^bc:"))
     app.add_handler(CallbackQueryHandler(on_paid_button, pattern=r"^(paid|paidw|unpaid):\d+$"))
     app.add_handler(CallbackQueryHandler(on_pack_button, pattern=r"^pack:\d+:\d+$"))
     app.add_handler(CallbackQueryHandler(on_rule_delete, pattern=r"^rdel:\d+$"))

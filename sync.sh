@@ -2,7 +2,7 @@
 # Asosiy bot kodini (../manhwa-tarjima-bot) shu repoga (@manhwatarjima_bot) ko'chirib, GitHub'ga yuboradi.
 set -e
 cd "$(dirname "$0")"
-for f in admins.py bigfile.py bot.py lama.py shop.py bubble_refine.py config.py fast_ocr.py image_editor.py \
+for f in admins.py bigfile.py bot.py broadcast.py lama.py shop.py bubble_refine.py config.py fast_ocr.py image_editor.py \
          image_utils.py pdf_utils.py translator.py uz_translate.py requirements.txt; do
   cp ../manhwa-tarjima-bot/$f .
 done
