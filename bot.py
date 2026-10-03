@@ -1355,23 +1355,35 @@ def _archive(job: str, name: str, data: bytes) -> None:
 # BOB BIR YO'LA (CHAPTER_BATCH=1): avval hamma sahifa o'qiladi (OCR), keyin butun bob matni
 # BITTA tarjima chaqiruvida (Gemini'ga 2-3 so'rov, sahifa boshiga emas), so'ng sahifalar chiziladi.
 CHAPTER_BATCH = os.getenv("CHAPTER_BATCH", "") == "1"
+# TEZLASHTIRISH (2026-10-03, foydalanuvchi: "tarjima sekin ishlayapti"): sahifalar avval KETMA-KET
+# o'qilardi (har biri ~2-4 s, 26 sahifa = ~70-80 s bir ishchida bekor turardi - OCR tarmoqni emas,
+# faqat CPU'ni band qiladi). Endi PAGE_OCR_WORKERS ta sahifa BIR VAQTDA o'qiladi. Har sahifaning
+# o'zi ham ichida bir nechta oqim ishlatadi (FAST_WORKERS, translator.py) - juda ko'p bo'lmasin deb
+# standart past (2); noutbukda yadro ko'p bo'lsa ko'paytirish mumkin.
+PAGE_OCR_WORKERS = max(1, int(os.getenv("PAGE_OCR_WORKERS", "2")))
 
 
 async def _chapter_batch(pages, limit: int, budget: dict, status_msg, t0: float,
                          report: dict | None = None):
-    reads: list[list[dict]] = []
+    reads: list[list[dict] | None] = [None] * len(pages)
     failed: list[int] = []
-    for num, _total, jpeg in pages:
+    progress = {"n": 0}
+    page_sem = asyncio.Semaphore(PAGE_OCR_WORKERS)
+
+    async def read_one(idx: int, num: int, jpeg: bytes) -> None:
+        async with page_sem, _ai_semaphore:
+            try:
+                reads[idx] = await asyncio.to_thread(read_page, jpeg, "image/jpeg", budget)
+            except TranslationError as exc:
+                logger.warning("PDF %d-sahifa o'qilmadi: %s", num, exc)
+                reads[idx] = []
+                failed.append(num)
+        progress["n"] += 1
         elapsed = int(time.time() - t0)
-        await _edit_status(status_msg, f"O'qilmoqda: {num}/{limit}-sahifa "
+        await _edit_status(status_msg, f"O'qilmoqda: {progress['n']}/{limit}-sahifa "
                                        f"({elapsed // 60}:{elapsed % 60:02d} o'tdi)")
-        try:
-            async with _ai_semaphore:
-                reads.append(await asyncio.to_thread(read_page, jpeg, "image/jpeg", budget))
-        except TranslationError as exc:
-            logger.warning("PDF %d-sahifa o'qilmadi: %s", num, exc)
-            reads.append([])
-            failed.append(num)
+
+    await asyncio.gather(*(read_one(i, num, jpeg) for i, (num, _total, jpeg) in enumerate(pages)))
     await _edit_status(status_msg, "Butun bob tarjima qilinmoqda (AI)...")
     flat = []
     for page_no, read in enumerate(reads):

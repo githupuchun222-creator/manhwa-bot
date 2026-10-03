@@ -30,6 +30,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 logger = logging.getLogger(__name__)
 
@@ -775,6 +776,57 @@ def _same_names(line: str) -> str:
     return line
 
 
+# PARALLEL SINASH (2026-10-03, foydalanuvchi: "tarjima sekin ishlayapti"): avval har model/kalit
+# KETMA-KET sinalardi - kechqurun bir nechtasi band/limitda bo'lsa (503/429) yoki birortasi
+# javobni ushlab qolsa (haqiqiy jurnalda bir model 49 s "timed out" bergan), 2 kalit x 9 model =
+# 18 urinish ketma-ket GEMINI_TIMEOUT(25 s)gacha cho'zilib, BITTA bo'lak uchun 5-10+ daqiqa
+# ketishi mumkin edi (1268 s'lik bob shundan). Endi bir nechtasi BIRGALIKDA so'raladi - birinchi
+# muvaffaqiyatli javob olinishi bilan qolganlari kutilmay davom etiladi. Sifatga ta'siri yo'q:
+# xuddi shu modellar, xuddi shu ko'rsatma - faqat qaysi birining javobi OLDIN kelishi biroz
+# o'zgarishi mumkin (odatda ustuvor model baribir eng tez javob beradi, chunki u sog'lom).
+GEMINI_RACE = max(1, int(os.getenv("GEMINI_RACE", "4")))
+
+
+def _call_gemini_once(k: int, key: str, spec: str, system: str, user: str, n_expected: int) -> list | None:
+    model, _, level = spec.partition(":")
+    if model.startswith("gemma"):
+        # Gemma: tizim ko'rsatmasi, JSON rejimi va fikrlash sozlamasi yo'q
+        payload = {"contents": [{"role": "user", "parts": [{"text": system + "\n\n" + user}]}],
+                   "generationConfig": {"temperature": 0.3}}
+    else:
+        payload = {
+            "systemInstruction": {"parts": [{"text": system}]},
+            "contents": [{"role": "user", "parts": [{"text": user}]}],
+            "generationConfig": {"temperature": 0.3, "responseMimeType": "application/json",
+                                 "thinkingConfig": {"thinkingLevel": level or "minimal"}},
+        }
+    req = urllib.request.Request(
+        f"{_GEMINI_BASE}/v1beta/models/{model}:generateContent",
+        data=json.dumps(payload).encode("utf-8"),
+        headers=_gemini_headers(key))
+    try:
+        with urllib.request.urlopen(req, timeout=GEMINI_TIMEOUT) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        text = "".join(p.get("text", "") for p in data["candidates"][0]["content"]["parts"]
+                       if not p.get("thought"))
+        out = _parse_list(text)
+        if isinstance(out, list) and len(out) == n_expected:
+            return out
+        logger.info("Gemini %s: javob mos emas (%s)", model, text[:80])
+        return None
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = exc.read().decode("utf-8", "replace")
+        except Exception:
+            detail = ""
+        _rest(k, model, exc.code, detail)
+        logger.info("Gemini %s (kalit %d) ishlamadi (HTTP %s)", model, k + 1, exc.code)
+    except Exception as exc:
+        _rest(k, model, None, "")
+        logger.info("Gemini %s (kalit %d) ishlamadi (%s)", model, k + 1, str(exc)[:120])
+    return None
+
+
 def _gemini(english: list[str], drafts: list[str]) -> list[str] | None:
     if time.time() - _S().last > NEW_CHAPTER_GAP:
         new_chapter()
@@ -788,56 +840,33 @@ def _gemini(english: list[str], drafts: list[str]) -> list[str] | None:
     if _S().names:
         user = ("Names already used in this chapter - write them EXACTLY like this:\n"
                 + json.dumps(dict(list(_S().names.items())[-40:]), ensure_ascii=False) + "\n\n" + user)
-    # Haqiqiy sinovda 3.5-flash-lite bir marta buzuq JSON, 3.1-flash-lite 503 berdi va
-    # butun sahifa Google'ning quruq tarjimasida qoldi. Endi har model 2 marta, oraliqda kutib.
     if not _gemini_ready():
         return None
     system = _system_prompt()
+    # Tartib (foydalanuvchi: "birinchisining limiti tugasa ikkinchisiga o'tsin"): avval 1-kalitning
+    # hamma modellari, u tugagach (hammasi dam olishda) - 2-kalit; GEMINI_RACE tadan to'plam
+    # bo'lib PARALLEL so'raladi (eng ustuvor sog'lom model odatda birinchi to'plamda yutadi).
+    candidates = [(k, key, spec) for k, key in enumerate(GEMINI_KEYS) for spec in GEMINI_MODELS]
     for attempt in range(2):
-        # Tartib (foydalanuvchi: "birinchisining limiti tugasa ikkinchisiga o'tsin"): avval 1-kalitning
-        # hamma modellari, u tugagach (hammasi dam olishda) - 2-kalit.
-        for k, key in enumerate(GEMINI_KEYS):
-          for spec in GEMINI_MODELS:
-            model, _, level = spec.partition(":")
-            if _cooldown.get((k, model), 0) > time.time():
-                continue
-            if model.startswith("gemma"):
-                # Gemma: tizim ko'rsatmasi, JSON rejimi va fikrlash sozlamasi yo'q
-                payload = {"contents": [{"role": "user", "parts": [{"text": system + "\n\n" + user}]}],
-                           "generationConfig": {"temperature": 0.3}}
-            else:
-                payload = {
-                    "systemInstruction": {"parts": [{"text": system}]},
-                    "contents": [{"role": "user", "parts": [{"text": user}]}],
-                    "generationConfig": {"temperature": 0.3, "responseMimeType": "application/json",
-                                         "thinkingConfig": {"thinkingLevel": level or "minimal"}},
-                }
-            req = urllib.request.Request(
-                f"{_GEMINI_BASE}/v1beta/models/{model}:generateContent",
-                data=json.dumps(payload).encode("utf-8"),
-                headers=_gemini_headers(key))
-            try:
-                with urllib.request.urlopen(req, timeout=GEMINI_TIMEOUT) as r:
-                    data = json.loads(r.read().decode("utf-8"))
-                text = "".join(p.get("text", "") for p in data["candidates"][0]["content"]["parts"]
-                               if not p.get("thought"))
-                out = _parse_list(text)
-                if isinstance(out, list) and len(out) == len(english):
-                    _S().last = time.time()
-                    _S().ctx.extend(english)
-                    del _S().ctx[:-8]
-                    return [_same_names(" ".join(str(s or "").split())) for s in out]
-                logger.info("Gemini %s: javob mos emas (%s)", model, text[:80])
-            except urllib.error.HTTPError as exc:
-                try:
-                    detail = exc.read().decode("utf-8", "replace")
-                except Exception:
-                    detail = ""
-                _rest(k, model, exc.code, detail)
-                logger.info("Gemini %s (kalit %d) ishlamadi (HTTP %s)", model, k + 1, exc.code)
-            except Exception as exc:
-                _rest(k, model, None, "")
-                logger.info("Gemini %s (kalit %d) ishlamadi (%s)", model, k + 1, str(exc)[:120])
+        pending = [c for c in candidates
+                   if _cooldown.get((c[0], c[2].partition(":")[0]), 0) <= time.time()]
+        if not pending:
+            break                              # hammasi dam olishda - qayta urinish foydasiz
+        pool = ThreadPoolExecutor(max_workers=GEMINI_RACE)
+        try:
+            for i in range(0, len(pending), GEMINI_RACE):
+                batch = pending[i:i + GEMINI_RACE]
+                futures = {pool.submit(_call_gemini_once, k, key, spec, system, user, len(english)): spec
+                           for k, key, spec in batch}
+                for fut in as_completed(futures):
+                    out = fut.result()
+                    if out is not None:
+                        _S().last = time.time()
+                        _S().ctx.extend(english)
+                        del _S().ctx[:-8]
+                        return [_same_names(" ".join(str(s or "").split())) for s in out]
+        finally:
+            pool.shutdown(wait=False)          # g'olib topildi - qolganlarini kutib o'tirmaymiz
         time.sleep(2 + 3 * attempt)
     return None
 
