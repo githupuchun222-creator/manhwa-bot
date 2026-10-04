@@ -51,6 +51,15 @@ def _rss_mb() -> float:
             return 0.0
 
 
+def _mem() -> str:
+    """Hozirgi va eng yuqori xotira (Linux/Android): telefonda Android xotira uchun o'chiradi."""
+    try:
+        d = dict(l.split(":", 1) for l in open("/proc/self/status") if l.startswith(("VmRSS", "VmHWM")))
+        return f"[xotira {int(d['VmRSS'].split()[0]) // 1024} MB, cho'qqi {int(d['VmHWM'].split()[0]) // 1024} MB]"
+    except Exception:
+        return ""
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("src")
@@ -85,7 +94,7 @@ def main() -> None:
         print("reslice:", exc)
     out["render"] = time.perf_counter() - t
     n = out["pages"] = len(pages)
-    print(f"{cores} yadro, {n} sahifa; isitish {out['warm']:.1f} s, PDF chizish {out['render']:.1f} s", flush=True)
+    print(f"{cores} yadro, {n} sahifa; isitish {out['warm']:.1f} s, PDF chizish {out['render']:.1f} s {_mem()}", flush=True)
 
     # bot.py import qilinmaydi (Telegram kerak emas): translator "nechta ish faol" ni shu soxta moduldan oladi
     sys.modules.setdefault("bot", types.SimpleNamespace(_active=[1]))
@@ -113,7 +122,7 @@ def main() -> None:
         dt = time.perf_counter() - t
         out["ocr"][f"{p}x{w}"] = dt
         print(f"OCR {p} sahifa x {w} oqim: {dt:.1f} s ({dt / n:.2f} s/sahifa), "
-              f"{sum(len(g) for g in got)} ta matn", flush=True)
+              f"{sum(len(g) for g in got)} ta matn {_mem()}", flush=True)
         if reads is None:
             reads = got
 
@@ -149,7 +158,7 @@ def main() -> None:
             res = list(ex.map(lambda x: image_editor.render_translation(x[0], x[1], 88, {}) if x[1] else x[0], work))
         dt = time.perf_counter() - t
         out["draw"][str(d)] = dt
-        print(f"Yozish {d} sahifa birga: {dt:.1f} s ({dt / n:.2f} s/sahifa)", flush=True)
+        print(f"Yozish {d} sahifa birga: {dt:.1f} s ({dt / n:.2f} s/sahifa) {_mem()}", flush=True)
         if drawn is pages:
             drawn = res
 
