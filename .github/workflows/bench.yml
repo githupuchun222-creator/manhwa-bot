@@ -1,0 +1,62 @@
+name: bench
+# Tezlik o'lchovi (bench.py): bitta bobni bot quvuridan o'tkazib, bosqichlar vaqtini chiqaradi.
+# Sinov fayli repoga qo'yilmaydi - Telegram'dan file_id bo'yicha olinadi.
+on:
+  workflow_dispatch:
+    inputs:
+      file_id:
+        description: "Telegram file_id (PDF, 20 MB gacha)"
+        required: true
+      args:
+        description: "bench.py ga qo'shimcha argumentlar"
+        default: "--ocr 1x4,2x2,4x1,4x2,3x2 --draw 3,4,6"
+concurrency:
+  group: bench
+  cancel-in-progress: true
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Kutubxonalar (keshdan)
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-${{ hashFiles('requirements.txt') }}-v2
+      - name: O'rnatish
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -r requirements.txt
+      - name: Shrift
+        continue-on-error: true
+        run: |
+          curl -fsSL -o /tmp/ds.zip "https://dl.dafont.com/dl/?f=digital_strip"
+          unzip -oj /tmp/ds.zip digistrip.ttf -d assets/fonts
+      - name: LaMa modeli (keshdan)
+        uses: actions/cache@v4
+        with:
+          path: assets/models
+          key: lama-fp32-v1
+      - name: O'lchov
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          OWNER_ID: ${{ secrets.OWNER_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OCR_ENGINE: fast
+          RENDER_V2: "1"
+          FONT_STYLES: "1"
+          PARALLEL_JOBS: "4"
+          CHAPTER_BATCH: "1"
+          GEMINI_CHUNK: "40"
+          GEMINI_MODELS: "gemini-3.5-flash:low,gemini-3.8-flash:low,gemini-3.7-flash:low,gemini-3.6-flash:low,gemini-3-flash-preview:low,gemini-3.5-flash-lite:low,gemini-3.1-flash-lite:low,gemini-3.1-flash-lite-preview:low,gemma-4-31b-it"
+          FILE_ID: ${{ inputs.file_id }}
+          ARGS: ${{ inputs.args }}
+        run: |
+          nproc; grep -m1 "model name" /proc/cpuinfo; free -m | head -2
+          .venv/bin/python bench.py "tg:$FILE_ID" $ARGS
