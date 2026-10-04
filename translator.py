@@ -201,7 +201,11 @@ def _current_fast_workers() -> int:
         n = max(1, len(bot._active))
     except Exception:
         n = 1
-    return max(1, FAST_WORKERS // n)
+    # Pastki chegara 1 EMAS 2 (2026-10-04, haqiqiy voqea: 4 ta YIRIK bob - 21+30+32+31
+    # sahifa - bir vaqtda tushganda 6//4=1 ga tushib, bo'lak o'qish DEYARLI TO'LIQ
+    # ketma-ket bo'lib qoldi (bitta 21 sahifali bob 27 daqiqaga cho'zilgan). 2 oqim
+    # hamon tirbashishni oldini oladi, lekin sahifa ichida kamida bir oz parallellik qoldiradi.
+    return max(2, FAST_WORKERS // n)
 
 
 def _auto_reader(tile, budget: dict | None = None) -> list[dict]:
