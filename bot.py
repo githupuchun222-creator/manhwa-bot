@@ -1193,13 +1193,33 @@ def _refund(job: dict) -> None:
             logger.exception("Paket balansi qaytarilmadi")
 
 
+# AYLANMA NAVBAT (2026-10-04, foydalanuvchi: "2 odam 10ta pdf yuborsa birin-ketin -
+# 1-chisi, 2-chisi, yana 1-chisi bo'lsin"): eski mantiq faqat "band bo'lmagan odamni"
+# tanlardi - PARALLEL_JOBS=1 da bu HECH NARSAGA ta'sir qilmasdi (band holat hech qachon
+# true bo'lmasdi, ish tugashi bilan navbatdan tushardi), shuning uchun 2-odamning fayli
+# navbatga qo'yilgan ORTIDAN - necha-nchi bo'lib tursa, o'sha joyida - ishlardi, aylanma
+# emas. Endi FOYDALANUVCHILAR orasida haqiqiy navbat bilan aylanadi.
+_last_served_user = None
+
+
 def _pick_job() -> dict | None:
-    """Keyingi ish: hozir ishi bajarilmayotgan foydalanuvchiniki birinchi (adolatli)."""
-    busy = {j["user"] for j in _active}
-    for job in _waiting:
-        if job["user"] not in busy:
-            return job
-    return _waiting[0] if _waiting else None
+    """Keyingi ish: foydalanuvchilar orasida AYLANMA (1-odam, 2-odam, 1-odam, ...).
+
+    Har safar NAVBATDAGI keyingi foydalanuvchining ENG ESKI faylini beradi; o'sha
+    foydalanuvchining fayli qolmasa, u aylanmadan o'zi tushib qoladi (keyingi
+    chaqiruvda ro'yxatda yo'q).
+    """
+    global _last_served_user
+    if not _waiting:
+        return None
+    users_in_order = list(dict.fromkeys(j["user"] for j in _waiting))
+    if _last_served_user in users_in_order:
+        idx = (users_in_order.index(_last_served_user) + 1) % len(users_in_order)
+    else:
+        idx = 0
+    user = users_in_order[idx]
+    _last_served_user = user
+    return next(j for j in _waiting if j["user"] == user)
 
 
 async def _queue_worker() -> None:
