@@ -8,11 +8,16 @@ har bir sahifani alohida rasm sifatida tarjima qiladi.
 """
 import io
 import logging
+import threading
 
 import pypdfium2 as pdfium
 from PIL import Image
 
 logger = logging.getLogger(__name__)
+
+# PDFium oqimlarga chidamsiz: bir nechta ish (PARALLEL_JOBS) bir vaqtda sahifa chizsa jarayon
+# yiqiladi (GitHub'da "Segmentation fault", 2026-10-04) - har PDFium chaqiruvi shu qulf ostida.
+_PDFIUM = threading.RLock()
 
 # Sahifa eni (px). OCR uchun ~1100 px yetarli: kattaroq - sekinroq, kichikroq -
 # mayda matn o'qilmaydi.
@@ -42,14 +47,15 @@ def _render_scale(width: float, height: float) -> float:
 
 
 def page_count(pdf_bytes: bytes) -> int:
-    try:
-        doc = pdfium.PdfDocument(pdf_bytes)
-    except Exception as exc:
-        raise PdfError(f"PDF ochilmadi: {exc}") from exc
-    try:
-        return len(doc)
-    finally:
-        doc.close()
+    with _PDFIUM:
+        try:
+            doc = pdfium.PdfDocument(pdf_bytes)
+        except Exception as exc:
+            raise PdfError(f"PDF ochilmadi: {exc}") from exc
+        try:
+            return len(doc)
+        finally:
+            doc.close()
 
 
 def render_pages(pdf_bytes: bytes, max_pages: int = DEFAULT_MAX_PAGES):
@@ -57,23 +63,28 @@ def render_pages(pdf_bytes: bytes, max_pages: int = DEFAULT_MAX_PAGES):
 
     Yields: (sahifa_raqami, jami_sahifa, jpeg_bytes)
     """
-    try:
-        doc = pdfium.PdfDocument(pdf_bytes)
-    except Exception as exc:
-        raise PdfError(f"PDF ochilmadi: {exc}") from exc
+    with _PDFIUM:
+        try:
+            doc = pdfium.PdfDocument(pdf_bytes)
+        except Exception as exc:
+            raise PdfError(f"PDF ochilmadi: {exc}") from exc
+        total = len(doc)
 
     try:
-        total = len(doc)
         if total == 0:
             raise PdfError("PDF bo'sh - sahifa yo'q.")
 
         for index in range(min(total, max_pages)):
-            page = doc[index]
             try:
-                width, height = page.get_size()
-                scale = _render_scale(width, height)
-                bitmap = page.render(scale=scale)
-                image = bitmap.to_pil().convert("RGB")
+                with _PDFIUM:                      # qulf yield paytida ushlab turilmaydi
+                    page = doc[index]
+                    try:
+                        width, height = page.get_size()
+                        scale = _render_scale(width, height)
+                        bitmap = page.render(scale=scale)
+                        image = bitmap.to_pil().convert("RGB")
+                    finally:
+                        page.close()
                 buf = io.BytesIO()
                 image.save(buf, format="JPEG", quality=92)
                 logger.info(
@@ -83,10 +94,9 @@ def render_pages(pdf_bytes: bytes, max_pages: int = DEFAULT_MAX_PAGES):
             except Exception as exc:
                 logger.warning("PDF %d-sahifani chizib bo'lmadi: %s", index + 1, exc)
                 continue
-            finally:
-                page.close()
     finally:
-        doc.close()
+        with _PDFIUM:
+            doc.close()
 
 
 def _uniform_rows(gray) -> "np.ndarray":
@@ -205,6 +215,11 @@ def fit_size(pages: list[bytes], max_bytes: int = MAX_OUTPUT_BYTES) -> tuple[lis
 
 def build_pdf(pages: list[bytes]) -> bytes:
     """JPEG sahifalardan bitta PDF yasaydi. JPEG'lar qayta siqilmaydi (sifat saqlanadi)."""
+    with _PDFIUM:
+        return _build_pdf(pages)
+
+
+def _build_pdf(pages: list[bytes]) -> bytes:
     pdf = pdfium.PdfDocument.new()
     buffers = []                                   # saqlanguncha tirik turishi kerak
     try:
