@@ -440,11 +440,39 @@ _WATERMARK = re.compile(
 def _is_watermark(text: str) -> bool:
     """Skanlatsiya guruhi nomi, sayt manzili, reklama - tarjima qilinmaydi."""
     t = re.sub(r"\s+", " ", text or "").strip()
-    return bool(t) and bool(_WATERMARK.search(t) or _PROMO.search(t))
+    return bool(t) and bool(_WATERMARK.search(t) or _PROMO.search(t) or _site_mark(t))
+
+
+_SITE_WORD = re.compile(r"manga|manhwa|manhua|webtoon|baozi|comic|scan", re.IGNORECASE)
+
+
+def _known_word(word: str) -> bool:
+    try:
+        import wordninja
+        return word.lower() in wordninja.DEFAULT_LANGUAGE_MODEL._wordcost
+    except Exception:
+        return True
+
+
+def _site_mark(t: str) -> bool:
+    """Bir so'zli sayt nomi: "MANGAYYCOM", "AKEMANGAID", "MANCAMY.ORO", "MANGAYY.OR6", "baozimh."
+    (foydalanuvchi skrinshotlari, 2026-10-04: ular "tarjima" qilinib, rasm ustiga katta yozilgan edi).
+    Oddiy so'z ("MANGA", "SCANNER") yoki ikki gapning yopishgani ("STOP.PLEASE") bunga kirmaydi."""
+    tok = t.strip(" .,!?:;-_*~|'\"")
+    if not tok or " " in tok or len(tok) < 7 or len(tok) > 24:
+        return False
+    letters = re.sub(r"[^A-Za-z]", "", tok)
+    if len(letters) < 6:
+        return False
+    if _SITE_WORD.search(tok) and not _known_word(letters):
+        return True
+    m = re.fullmatch(r"([A-Za-z]{4,})\.([A-Za-z0-9]{2,4})", tok)      # domenga o'xshash
+    return bool(m) and not _known_word(m.group(1))
 
 
 # Reklama/titr jumlalari ("HELP US WITH DONATIONS", "WE ARE RECRUITING")
-_PROMO = re.compile(r"donat(e|ion)|recruit|consider\s+(support|donat)|support\s+us\b", re.IGNORECASE)
+_PROMO = re.compile(r"donat(e|ion)|recruit|consider\s+(support|donat)|support\s+us\b"
+                    r"|\bnch\s+(software|photo)|photo\s*pad|trial\s+version", re.IGNORECASE)
 _CREDIT_ROLE = re.compile(
     r"(?i)(staff|credits?|tlc?|rd|ed|pr|ts|qc|cl|rp|translator|translation|proofreader|proofreading"
     r"|redrawer|redraw(ing)?|cleaner|cleaning|typesetter|typesetting|editor|quality checker"
