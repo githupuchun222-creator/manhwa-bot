@@ -178,6 +178,15 @@ def main() -> None:
             dt = time.perf_counter() - t
             out["lama"][th] = dt
             print(f"LaMa {th} oqim (yozish {d} sahifa birga): {dt:.1f} s ({dt / n:.2f} s/sahifa)", flush=True)
+        os.environ["LAMA"] = "0"                           # LaMa'siz (avvalgi to'ldirish usuli) - solishtirish uchun
+        work = [(j, [dict(i) for i in items]) for j, items in zip(pages, per_page)]
+        t = time.perf_counter()
+        with ThreadPoolExecutor(d) as ex:
+            list(ex.map(lambda x: image_editor.render_translation(x[0], x[1], 88, {}) if x[1] else x[0], work))
+        dt = time.perf_counter() - t
+        out["lama"]["off"] = dt
+        os.environ.pop("LAMA", None)
+        print(f"LaMa O'CHIQ (yozish {d} sahifa birga): {dt:.1f} s ({dt / n:.2f} s/sahifa)", flush=True)
 
     t = time.perf_counter()
     fitted, note = pdf_utils.fit_size(drawn)
