@@ -65,6 +65,7 @@ def main() -> None:
     ap.add_argument("src")
     ap.add_argument("--ocr", default="")
     ap.add_argument("--draw", default="")
+    ap.add_argument("--lama", default="", help="LaMa oqimlari soni ro'yxati (masalan 1,2,3,4)")
     ap.add_argument("--pages", type=int, default=60)
     ap.add_argument("--no-translate", action="store_true")
     a = ap.parse_args()
@@ -161,6 +162,22 @@ def main() -> None:
         print(f"Yozish {d} sahifa birga: {dt:.1f} s ({dt / n:.2f} s/sahifa) {_mem()}", flush=True)
         if drawn is pages:
             drawn = res
+
+    out["lama"] = {}
+    if a.lama:
+        import lama
+        d = draw_cfgs[0]
+        for th in a.lama.split(","):
+            os.environ["LAMA_THREADS"] = th
+            lama._session = None
+            lama._get()                                    # yuklash vaqti o'lchovga kirmasin
+            work = [(j, [dict(i) for i in items]) for j, items in zip(pages, per_page)]
+            t = time.perf_counter()
+            with ThreadPoolExecutor(d) as ex:
+                list(ex.map(lambda x: image_editor.render_translation(x[0], x[1], 88, {}) if x[1] else x[0], work))
+            dt = time.perf_counter() - t
+            out["lama"][th] = dt
+            print(f"LaMa {th} oqim (yozish {d} sahifa birga): {dt:.1f} s ({dt / n:.2f} s/sahifa)", flush=True)
 
     t = time.perf_counter()
     fitted, note = pdf_utils.fit_size(drawn)

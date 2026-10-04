@@ -35,11 +35,10 @@ def _get():
             import onnxruntime as ort
 
             opt = ort.SessionOptions()
-            # Chaqiruvlar _lock bilan bittadan ketadi - kichik mashinada (GitHub: 4 yadro) model HAMMA
-            # yadroni olsin: avval yarmi (2) edi, yozish bosqichi vaqtning ~90% ini olardi (2026-10-04).
-            cores = os.cpu_count() or 4
-            opt.intra_op_num_threads = int(os.getenv("LAMA_THREADS", "0")) or (
-                cores if cores <= 4 else max(2, min(6, cores // 2)))
+            # LAMA_THREADS bilan o'zgartiriladi. Standart - yadrolarning yarmi: GitHub'da (4 vCPU = 2 haqiqiy
+            # yadro) 4 oqim berilganda yozish bosqichi 2 barobar SEKINLASHDI (2026-10-04 o'lchovi).
+            opt.intra_op_num_threads = int(os.getenv("LAMA_THREADS", "0")) or max(
+                2, min(6, (os.cpu_count() or 4) // 2))
             opt.log_severity_level = 3
             _session = ort.InferenceSession(str(MODEL), sess_options=opt, providers=["CPUExecutionProvider"])
             logger.info("LaMa modeli yuklandi")
