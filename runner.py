@@ -100,13 +100,10 @@ async def main() -> None:
     await app.start()
     worker = asyncio.create_task(bot._queue_worker())
     log.info("Bot uyg'ondi: @%s", app.bot.username)
-    if bot.shop.ENABLED:          # yarimda qolgan tarjimalar davom ettiriladi
-        try:
-            n = await bot.shop.resume_unfinished(SimpleNamespace(bot=app.bot))
-            if n:
-                log.info("Yarimda qolgan %d ta ish navbatga qaytarildi", n)
-        except Exception as exc:
-            log.warning("Yarimda qolgan ishlar tiklanmadi: %s", exc)
+    # Yarimda qolgan tarjimalar ishga tushishda EMAS, shu nusxa ishni haqiqatan olganda davom ettiriladi
+    # (pastda, jarayon davomida bir marta). 2026-10-04: telefon nusxasi noutbuk ishlab turganida ham
+    # ularni boshidan boshlardi - bob ikki marta yuborilardi, xotira to'lib Android Termux'ni o'chirardi.
+    resumed_jobs = not bot.shop.ENABLED
 
     last_activity = time.time()
     headers = {"x-key": GATE_KEY}
@@ -117,6 +114,7 @@ async def main() -> None:
     direct = False                     # darvozasiz rejim: xabarlar to'g'ridan-to'g'ri Telegram'dan
     down_since = None
     tg_offset = None
+    above = now_wait = False
     last_probe = 0.0                   # darvoza oxirgi marta qachon so'ralgan
     told_down = False                  # uzilish haqida egasiga aytilganmi (bir uzilishda bir marta)
 
@@ -210,6 +208,14 @@ async def main() -> None:
                                              "to‘g‘ridan-to‘g‘ri Telegram’dan olmoqda. Bot ishlayapti.")
                     except Exception as exc:
                         log.warning("Darvozasiz rejimga o'tib bo'lmadi: %s", exc)
+            if not resumed_jobs and not old and (direct or (gate_ok and not above and not now_wait)):
+                resumed_jobs = True
+                try:
+                    n = await bot.shop.resume_unfinished(SimpleNamespace(bot=app.bot))
+                    if n:
+                        log.info("Yarimda qolgan %d ta ish navbatga qaytarildi", n)
+                except Exception as exc:
+                    log.warning("Yarimda qolgan ishlar tiklanmadi: %s", exc)
             got_direct = False
             if direct:
                 try:
