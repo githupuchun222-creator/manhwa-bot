@@ -1388,6 +1388,11 @@ async def _chapter_batch(pages, limit: int, budget: dict, status_msg, t0: float,
     reads: list[list[dict] | None] = [None] * len(pages)
     failed: list[int] = []
     progress = {"n": 0}
+    # DIQQAT: bu yerda PAGE_OCR_WORKERS ni ham len(_active) ga qarab kamaytirish
+    # SHART EMAS - translator.py dagi _current_fast_workers() allaqachon umumiy oqim
+    # sonini (ish soni x sahifa x oqim) doimiy ushlab turadi (~CPU yadrolari atrofida);
+    # ikkalasini ham kamaytirish ikki marta kamaytirib, band paytda CPU'ni bekorga
+    # bo'shatib qo'yardi.
     page_sem = asyncio.Semaphore(PAGE_OCR_WORKERS)
 
     async def read_one(idx: int, num: int, jpeg: bytes) -> None:

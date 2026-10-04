@@ -185,6 +185,25 @@ FAST_OVERLAP = 300
 FAST_WORKERS = int(os.getenv("FAST_WORKERS", str(max(2, min(os.cpu_count() or 2, 6)))))
 
 
+def _current_fast_workers() -> int:
+    """TIRBASHLASH (2026-10-04, foydalanuvchi: "4 kishi ishlatsa ham tezlik yo'qolmasin"):
+    bitta ish yolg'iz ishlasa FAST_WORKERS (6) oqim ochadi - to'g'ri. Lekin
+    PARALLEL_JOBS bilan bir nechta ish BIR VAQTDA shuni qilsa (4 ish x 6 oqim = 24),
+    12 yadroli noutbukda bu "adolatli" taqsimot emas, ORTIQCHA KONTEKST ALMASHISH
+    vaqti qo'shadi (sinovda: band paytda sahifa ~2-3 baravar sekinlashgan, faqat
+    "teng bo'linish" kutilgani - ~1.3-1.5x - o'rniga). Shuning uchun qancha ish FAOL
+    bo'lsa, shunga mos OZROQ oqim ochiladi - natija (OCR aniqligi) o'zgarmaydi,
+    faqat parallellik darajasi. bot.py bilan AYLANA IMPORT bo'lmasin deb shu yerda
+    (chaqirilganda) import qilinadi - bot hali to'liq yuklanmagan bo'lsa (masalan
+    o'rganish skriptlarida bot ishlamaydi) yolg'iz holatga qaytadi."""
+    try:
+        import bot
+        n = max(1, len(bot._active))
+    except Exception:
+        n = 1
+    return max(1, FAST_WORKERS // n)
+
+
 def _auto_reader(tile, budget: dict | None = None) -> list[dict]:
     """Bitta rasm/bo'lakni o'qiydi: avval tezkor OCR, ishonchsiz bo'lsa - VLM.
 
@@ -240,7 +259,7 @@ def _read_fast_tiled(image, budget: dict | None) -> list[dict]:
     if OCR_ENGINE in ("auto", "fast"):
         from concurrent.futures import ThreadPoolExecutor
 
-        with ThreadPoolExecutor(FAST_WORKERS) as pool:
+        with ThreadPoolExecutor(_current_fast_workers()) as pool:
             results = list(pool.map(_fast_read_tile, [t for _, t in tiles]))
         _used["tezkor OCR"] = _used.get("tezkor OCR", 0) + len(tiles)
     else:
