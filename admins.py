@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import time as _time
 import urllib.request
 
 from config import ADMINS_FILE, OWNER_ID
@@ -48,7 +49,43 @@ def pull_remote() -> None:
         logging.getLogger(__name__).warning("Adminlar ro'yxati olinmadi: %s", exc)
 
 
+# HAMKORLIK REJIMI (2026-10-06, foydalanuvchi: "noutbuk yonganda GitHub'ga yordam bersin, GitHub'dagi
+# ishni noutbuk davom ettirsin"): noutbuk qaytganda GitHub joriy bobini tugatadi, qolgan ishlar esa
+# noutbukka o'tadi - bir necha daqiqa IKKALASI ishlaydi. Holat bitta JSON (darvozada) - har biri o'z
+# mahalliy nusxasini yozsa, ikkinchisining o'zgarishini bosib ketardi. Shu oynada har o'qish darvozadagi
+# YANGI nusxadan (eng ko'pi FRESH_EVERY s eski) qilinadi: o'qish-o'zgartirish-yozish deyarli bir zumda.
+FRESH_EVERY = 1.0
+_shared = {"until": 0.0, "fresh": 0.0}
+
+
+def share_for(seconds: float) -> None:
+    """Shuncha soniya holat darvozadan yangilab o'qiladi (boshqa runner ham yozayotgan payt)."""
+    _shared["until"] = max(_shared["until"], _time.time() + seconds)
+
+
+def shared() -> bool:
+    return bool(ADMINS_URL) and _time.time() < _shared["until"]
+
+
+def peek_remote() -> dict | None:
+    """Darvozadagi holat (mahalliy faylga yozmasdan)."""
+    if not ADMINS_URL:
+        return None
+    data = _remote("GET")
+    return data if isinstance(data, dict) and "admins" in data else None
+
+
 def _load() -> dict:
+    if shared() and not _DIRTY.exists() and _time.time() - _shared["fresh"] > FRESH_EVERY:
+        try:
+            data = peek_remote()
+            if data is not None:
+                with open(ADMINS_FILE, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2)
+                _shared["fresh"] = _time.time()
+                return data
+        except Exception as exc:
+            logging.getLogger(__name__).warning("Holat darvozadan yangilanmadi: %s", exc)
     if not ADMINS_FILE.exists():
         data = {"admins": [OWNER_ID]}
         _save(data)
@@ -63,6 +100,7 @@ def _save(data: dict) -> None:
     if ADMINS_URL:
         try:
             _remote("PUT", json.dumps(data).encode("utf-8"))
+            _shared["fresh"] = _time.time()        # mahalliy nusxa endi darvozadagi bilan bir xil
             if _DIRTY.exists():
                 _DIRTY.unlink(missing_ok=True)
         except Exception as exc:
@@ -218,7 +256,6 @@ def apply_gifts() -> None:
 # "subs": {id: tugash_vaqti (unix)}. Obunachi - cheklovsiz tarjima, admin huquqisiz.
 # "users": {username: id} - egasi odamni @username bilan qo'sha olishi uchun (bot faqat o'ziga
 # yozgan odamning ID'sini bila oladi).
-import time as _time
 
 SUB_DAYS = int(os.getenv("SUB_DAYS", "30") or 30)
 # HAFTALIK OBUNA (2026-10-01, foydalanuvchi talabi): arzonroq, qisqa muddatli tarif.

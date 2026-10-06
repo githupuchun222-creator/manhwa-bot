@@ -54,6 +54,12 @@ GATE_PROBE_EVERY = 30          # to'g'ridan-to'g'ri rejimda darvoza shuncha soni
 PREFER_DIRECT = os.getenv("PREFER_DIRECT", "1" if ROLE == "primary" else "0") == "1"
 
 
+# YORDAM REJIMI (2026-10-06): GitHub ishlayotganda noutbuk qaytsa - GitHub joriy bobini tugatadi, navbatini
+# noutbukka beradi (shop.hand_off). Noutbuk/telefon topshirilgan ishlarni shuncha soniyada bir marta tekshiradi.
+HANDOFF_EVERY = 20
+PEER_BEAT = 60                 # GitHub "hali ishlayapman" belgisini shuncha soniyada yangilaydi
+
+
 class _SkipGate(Exception):
     """Darvozasiz rejimda bu aylanishda darvoza so'ralmaydi (so'rov limitini tejash)."""
 # Ish boshqa qurilmaga o'tganda FAQAT egasiga xabar (foydalanuvchilar hech narsa ko'rmaydi)
@@ -117,6 +123,8 @@ async def main() -> None:
     above = now_wait = False
     last_probe = 0.0                   # darvoza oxirgi marta qachon so'ralgan
     told_down = False                  # uzilish haqida egasiga aytilganmi (bir uzilishda bir marta)
+    last_handoff = 0.0                 # topshirilgan ishlar oxirgi marta qachon tekshirilgan
+    last_beat = 0.0                    # GitHub: "hali ishlayapman" belgisi qachon yozilgan
 
     async def tell_owner(text: str) -> None:
         try:
@@ -142,7 +150,18 @@ async def main() -> None:
                 above = r.headers.get("x-retire") == "1"       # yuqori darajadagi runner tirik
                 if above and ROLE == "backup" and not retired:
                     retired = True
-                    log.info("Asosiy runner ishlayapti - zaxira ishini tugatib o'chadi")
+                    log.info("Asosiy runner ishlayapti - zaxira joriy bobini tugatib, qolganini unga beradi")
+                    admins.share_for(10 ** 9)          # endi holatni ikkalamiz yozamiz - har doim yangisini o'qiymiz
+                    if bot.shop.ENABLED:
+                        try:
+                            if bot._active:
+                                await asyncio.to_thread(bot.shop.mark_peer_busy, True)
+                                last_beat = time.time()
+                            n = await bot.shop.hand_off(app.bot)
+                            await tell_owner(f"🤝 Yuqori server qaytdi: {n} ta navbatdagi ish unga o‘tkazildi. "
+                                             f"☁️ GitHub joriy {len(bot._active)} ta ishini tugatib o‘chadi.")
+                        except Exception as exc:
+                            log.warning("Ishlar topshirilmadi: %s", exc)
                 if ROLE != "backup":
                     if above and not want_standby:
                         log.info("Yuqori darajadagi runner ishlayapti - ish tugagach kutishga o'tiladi")
@@ -216,6 +235,25 @@ async def main() -> None:
                         log.info("Yarimda qolgan %d ta ish navbatga qaytarildi", n)
                 except Exception as exc:
                     log.warning("Yarimda qolgan ishlar tiklanmadi: %s", exc)
+            if retired and bot.shop.ENABLED:
+                try:
+                    if bot._waiting:                     # topshirishdan keyin navbatga tushgan buyurtmalar
+                        await bot.shop.hand_off(app.bot)
+                    if bot._active and time.time() - last_beat > PEER_BEAT:
+                        last_beat = time.time()
+                        await asyncio.to_thread(bot.shop.mark_peer_busy, True)
+                except Exception as exc:
+                    log.warning("Topshirish xatosi: %s", exc)
+            elif (ROLE != "backup" and bot.shop.ENABLED and resumed_jobs and not old and not standby
+                    and not want_standby and time.time() - last_handoff > HANDOFF_EVERY):
+                last_handoff = time.time()
+                try:
+                    n = await bot.shop.take_handoffs(app.bot)
+                    if n:
+                        log.info("GitHub topshirgan %d ta ish navbatga olindi", n)
+                        await tell_owner(f"🤝 ☁️ GitHub’dagi {n} ta ish {PLACE.get(ROLE, ROLE)}da davom etmoqda.")
+                except Exception as exc:
+                    log.warning("Topshirilgan ishlar olinmadi: %s", str(exc).splitlines()[0][:160])
             got_direct = False
             if direct:
                 try:
@@ -249,6 +287,11 @@ async def main() -> None:
                 log.info("Kutish holati: xabarlarni yuqori darajadagi runner oladi")
             # darvozasiz rejimda get_updates o'zi 8 s gacha kutadi - qo'shimcha kutish shart emas
             await asyncio.sleep(0.2 if direct else STANDBY_EVERY if standby else POLL_EVERY)
+        if retired and bot.shop.ENABLED:
+            try:
+                await asyncio.to_thread(bot.shop.mark_peer_busy, False)
+            except Exception:
+                pass
         try:   # gate darhol bilsin: endi kelgan xabar uchun yangi runner yoqiladi
             await c.post(f"{GATE_URL}/pending", headers=headers,
                          params={"runner": "1", "retire": "1", "role": ROLE})

@@ -12,6 +12,7 @@ Ma'lumotlar admins.json da (Cloudflare darvozasiga ham saqlanadi): "orders", "se
 yetib bormasa hisob qaytariladi (bot._refund).
 """
 
+import asyncio
 import html
 import io
 import logging
@@ -935,8 +936,11 @@ RESUME_MAX = int(os.getenv("RESUME_MAX", "20"))
 
 def unfinished(now: float | None = None) -> list[dict]:
     now = now or time.time()
-    out = [o for o in _data().get("orders", {}).values()
+    data = _data()
+    peer = now - float(data.get("peer_busy", 0)) < PEER_BUSY_MS   # GitHub hali o'z bobini tugatmoqda
+    out = [o for o in data.get("orders", {}).values()
            if o.get("status") in (ST_QUEUED, ST_WORK) and o.get("files")
+           and not (peer and o.get("status") == ST_WORK and o.get("by") not in (None, ROLE))
            and now - max(o.get("created", 0), o.get("started", 0)) < RESUME_MAX_AGE]
     return sorted(out, key=lambda o: o.get("created", 0))[:RESUME_MAX]
 
@@ -953,6 +957,8 @@ async def resume_unfinished(context) -> int:
         except TelegramError:
             pass
         try:
+            if o.get("handoff"):
+                _set_order(o["ref"], taken=ROLE)
             await enqueue_order(context, o, charged=False, daily=False, bal=False)
             done += 1
         except TelegramError as exc:
@@ -961,6 +967,103 @@ async def resume_unfinished(context) -> int:
     if done:
         _log(0, f"qayta ishga tushish: {done} ta ish davom ettirildi")
     return done
+
+
+# GITHUB -> NOUTBUK TOPSHIRIG'I (2026-10-06, foydalanuvchi: "noutbuk yonganda GitHub'ga yordam bersin,
+# 100 foiz rolini olmasin - GitHub'ga berilgan ishni noutbuk davom ettirsin"). Oldin noutbuk qaytsa ham
+# GitHub BUTUN navbatini o'zi tugatardi (sahifasi ~2 barobar sekin), noutbuk esa bo'sh turardi. Endi:
+#  - GitHub (zaxira) yuqori daraja qaytganini bilishi bilan (runner: retired) hozir chizayotgan BOBINI
+#    tugatadi, navbatdagi buyurtmalarni va ko'p bobli buyurtmaning QOLGAN boblarini "handoff" belgisi
+#    bilan umumiy holatga qaytaradi;
+#  - noutbuk/telefon holatni har HANDOFF_EVERY s da ko'radi va belgilangan buyurtmalarni o'z navbatiga
+#    oladi ("taken"). Hisobdan qayta yechilmaydi. Shu oynada ikkalasi admins.share_for rejimida yozadi.
+# Yarim chizilgan bob ko'chirilmaydi (boshidan qilish vaqtni ko'proq yeydi) - uni GitHub tugatadi.
+ROLE = os.getenv("RUNNER_ROLE", "backup")
+HANDOFF = {"on": False}            # shu nusxa (GitHub) ishni yuqori darajaga topshirmoqda
+PEER_BUSY_MS = 150                 # GitHub "hali ishlayapman" belgisi shuncha soniya amal qiladi
+
+
+def _queued_here(ref: str) -> bool:
+    return any(j.get("order") == ref for j in B._waiting + B._active)
+
+
+async def hand_off(bot) -> int:
+    """GitHub: navbatdagi (boshlanmagan) buyurtmalarni yuqori darajadagi runnerga beradi."""
+    HANDOFF["on"] = True
+    n = 0
+    for job in list(B._waiting):
+        if not job.get("order") or job.get("quick") or job.get("cancelled"):
+            continue                       # tezkor yo'l ishlari (buyurtmasiz) shu yerda tugatiladi
+        B._waiting.remove(job)             # navbat signali qoladi - _pick_job None qaytaradi
+        _set_order(job["order"], status=ST_QUEUED, handoff=int(time.time()), taken=None)
+        n += 1
+        await B._edit_status(job["status"], f"🧾 {job['order']}: tezroq serverga o‘tkazildi "
+                                            "— tarjima o‘sha yerda davom etadi.")
+    if n:
+        _log(0, f"topshirildi: {n} ta buyurtma yuqori darajadagi runnerga")
+    return n
+
+
+def _split_rest(o: dict, groups: list[list[dict]], i: int) -> str:
+    """Ko'p bobli buyurtmaning i-bobdan keyingi qismini alohida (topshirilgan) buyurtmaga ajratadi."""
+    data = _data()
+    orders = data.setdefault("orders", {})
+    k = 2
+    while f"{o['ref']}.{k}" in orders:
+        k += 1
+    ref = f"{o['ref']}.{k}"
+    rest = [f for g in groups[i:] for f in g]
+    child = {key: v for key, v in o.items() if key not in ("started", "by", "delivered", "taken")}
+    child.update(ref=ref, parent=o["ref"], files=rest, chapters=len(groups) - i, status=ST_QUEUED,
+                 created=int(time.time()), handoff=int(time.time()))
+    orders[ref] = child
+    p = orders.get(o["ref"])
+    if p is not None:
+        p["files"] = [f for g in groups[:i] for f in g]     # "Qayta urinish" faqat shu yerda qilinganini
+        p["chapters"] = i
+    _save(data)
+    _log(0, f"topshirildi: {len(groups) - i} ta bob", ref)
+    return ref
+
+
+def mark_peer_busy(on: bool) -> None:
+    """GitHub: "joriy bobim hali tugamadi" belgisi (noutbuk shu payt holatni yangilab o'qiydi)."""
+    data = _data()
+    if on:
+        data["peer_busy"] = int(time.time())
+    elif data.pop("peer_busy", None) is None:
+        return
+    _save(data)
+
+
+async def take_handoffs(bot) -> int:
+    """Noutbuk/telefon: GitHub topshirgan buyurtmalarni o'z navbatiga oladi."""
+    data = await asyncio.to_thread(admins.peek_remote)
+    if not data:
+        return 0
+    if time.time() - float(data.get("peer_busy", 0)) < PEER_BUSY_MS:
+        admins.share_for(PEER_BUSY_MS)
+    todo = sorted((o for o in data.get("orders", {}).values()
+                   if o.get("handoff") and not o.get("taken") and o.get("status") == ST_QUEUED
+                   and o.get("files") and not _queued_here(o["ref"])),
+                  key=lambda o: o.get("created", 0))
+    if not todo:
+        return 0
+    admins.share_for(PEER_BUSY_MS)
+    ctx = type("Ctx", (), {"bot": bot})()
+    n = 0
+    for o in todo:
+        _set_order(o["ref"], taken=ROLE)
+        o = get_order(o["ref"]) or o
+        try:
+            await enqueue_order(ctx, o, charged=False, daily=False, bal=False)
+            n += 1
+        except TelegramError as exc:
+            logger.warning("%s qabul qilinmadi: %s", o["ref"], exc)
+            _set_order(o["ref"], taken=None)
+    if n:
+        _log(0, f"qabul qilindi: {n} ta topshirilgan buyurtma ({ROLE})")
+    return n
 
 
 async def _user_cancel(update: Update, context, ref: str) -> None:
@@ -1028,11 +1131,18 @@ async def process_order(job: dict) -> None:
     context, status = job["context"], job["status"]
     if not o:
         return
-    _set_order(ref, status=ST_WORK, started=int(time.time()))
+    _set_order(ref, status=ST_WORK, started=int(time.time()), by=ROLE, handoff=None)
     groups = _chapters(o["files"])
     n = len(groups)
     done, failed = 0, []
     for i, group in enumerate(groups, 1):
+        if HANDOFF["on"] and i > 1:
+            # yuqori daraja qaytdi: tugagan boblar shu yerda qoladi, qolganini o'sha davom ettiradi
+            child = _split_rest(o, groups, i - 1)
+            await B._edit_status(status, f"🧾 {ref}: {i - 1}/{n} bob tayyor. Qolgan {n - i + 1} tasi "
+                                         f"tezroq serverda davom etadi ({child}).")
+            n = i - 1
+            break
         first = group[0]
         if first.get("kind") in ("pdf", "zip") and first.get("name"):
             name = first["name"].rsplit(".", 1)[0]          # asl fayl nomi - natijada ham shu
