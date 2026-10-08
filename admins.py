@@ -1,3 +1,4 @@
+import contextvars
 import json
 import logging
 import os
@@ -97,7 +98,7 @@ def _load() -> dict:
 def _save(data: dict) -> None:
     with open(ADMINS_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
-    if ADMINS_URL:
+    if ADMINS_URL and not READONLY["on"]:
         try:
             _remote("PUT", json.dumps(data).encode("utf-8"))
             _shared["fresh"] = _time.time()        # mahalliy nusxa endi darvozadagi bilan bir xil
@@ -475,8 +476,19 @@ def get_glossary(key: str) -> dict:
     return dict(g) if isinstance(g, dict) else {}
 
 
+# ISH HOVUZI (2026-10-08, pool.py): bobni qaysi runner tarjima qilsa ham umumiy holatni faqat xabar
+# qabul qiluvchi yozadi. Bob ishlanayotganda lug'at shu "savatga" yig'iladi va natija bilan qaytadi.
+GLOSS_SINK: contextvars.ContextVar = contextvars.ContextVar("gloss_sink", default=None)
+# Yordamchi runner (xabar qabul qilmaydi): holatni faqat mahalliy faylga yozadi, darvozaga YOZMAYDI
+READONLY = {"on": False}
+
+
 def put_glossary(key: str, names: dict) -> None:
     if not names:
+        return
+    sink = GLOSS_SINK.get()
+    if sink is not None:
+        sink[key] = {**names, **sink.get(key, {})}
         return
     data = _load()
     gl = data.setdefault("glossary", {})

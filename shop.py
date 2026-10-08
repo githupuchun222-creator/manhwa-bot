@@ -27,6 +27,7 @@ from telegram.ext import ContextTypes
 
 import admins
 import broadcast
+import pool
 
 logger = logging.getLogger(__name__)
 
@@ -913,6 +914,8 @@ async def _start_job(update: Update, context, draft: dict, nonce: str) -> None:
 
 async def enqueue_order(context, order: dict, charged: bool, daily: bool = False,
                         bal: bool = False) -> None:
+    if await _pool_order(context, order, {"free": charged, "daily": daily, "bal": bal}):
+        return
     ahead = len(B._waiting) + len(B._active)
     status = await context.bot.send_message(
         order["uid"], f"🧾 {order['ref']}: " + ("tarjima boshlanmoqda..." if ahead < B.PARALLEL_JOBS else
@@ -934,12 +937,177 @@ RESUME_MAX_AGE = int(os.getenv("RESUME_MAX_AGE", str(6 * 3600)))   # bundan eski
 RESUME_MAX = int(os.getenv("RESUME_MAX", "20"))
 
 
+# ------------------------------------------------------------------ ish hovuzi (pool.py)
+class _StatusRef:
+    """Holat xabari boshqa runnerda yaratilgan bo'lsa ham - chat va xabar raqami bilan tahrirlanadi."""
+
+    def __init__(self, bot, chat_id: int, message_id: int):
+        self._bot, self.chat_id, self.message_id = bot, chat_id, message_id
+
+    async def edit_text(self, text: str, **kw):
+        return await self._bot.edit_message_text(text, chat_id=self.chat_id, message_id=self.message_id, **kw)
+
+
+def _chapter_name(o: dict, group: list[dict], i: int, n: int) -> str:
+    first = group[0]
+    if first.get("kind") in ("pdf", "zip") and first.get("name"):
+        return first["name"].rsplit(".", 1)[0]          # asl fayl nomi - natijada ham shu
+    return _label(o) + (f" ({i})" if n > 1 else "")
+
+
+async def _pool_order(context, order: dict, flags: dict, status=None) -> bool:
+    """Buyurtmani boblarga bo'lib hovuzga qo'yadi. Hovuz ishlamasa False (oddiy navbat)."""
+    if not pool.ready():
+        return False
+    groups = _chapters(order.get("files") or [])
+    n = len(groups)
+    if not n:
+        return False
+    ref, uid = order["ref"], order["uid"]
+    msgs = []
+    try:
+        if status is None or n > 1:
+            head = (f"\U0001f9fe {ref}: tarjima boshlanmoqda..." if n == 1 else
+                    f"\U0001f9fe {ref}: {n} ta bob bir vaqtda tarjima qilinadi - har biri alohida fayl bo\u2018lib keladi.")
+            if status is None:
+                status = await context.bot.send_message(uid, head)
+            else:
+                await B._edit_status(status, head)
+        if n == 1:
+            msgs = [status]
+        else:
+            for i in range(1, n + 1):
+                msgs.append(await context.bot.send_message(uid, f"\U0001f9fe {ref} \u00b7 {i}/{n}-bob: navbatda \u23f3"))
+    except TelegramError as exc:
+        logger.warning("%s: holat xabari yuborilmadi (%s)", ref, exc)
+        return False
+    jobs = [{"ref": f"{ref}#{i}", "uid": uid, "size": sum(int(f.get("size") or 0) for f in g),
+             "data": {"order": ref, "i": i, "n": n, "uid": uid, "chat": uid, "mid": m.message_id,
+                      "files": g, "name": _chapter_name(order, g, i, n), "flags": flags}}
+            for i, (g, m) in enumerate(zip(groups, msgs), 1)]
+    if not await pool.add(jobs):
+        for m in (msgs if n > 1 else []):
+            try:
+                await m.delete()
+            except TelegramError:
+                pass
+        return False
+    _set_order(ref, pooled=True, parts=n, parts_done=[], fails=[], okn=0, pflags=flags)
+    logger.info("%s: %d ta bob hovuzga qo'yildi", ref, n)
+    return True
+
+
+async def pool_quick(job: dict) -> bool:
+    """Tezkor yo'l (PDF/ZIP to'g'ridan-to'g'ri yuborilgan) ham hovuz orqali."""
+    o = get_order(job.get("order") or "")
+    if not o:
+        return False
+    return await _pool_order(job["context"], o, {"free": job.get("free"), "daily": job.get("daily"),
+                                                  "bal": job.get("bal")}, status=job["status"])
+
+
+async def run_pool_chapter(bot, job: dict) -> dict:
+    """Hovuzdan olingan bitta bobni tarjima qilib yuboradi (istalgan runnerda)."""
+    from types import SimpleNamespace
+    d = job["data"]
+    status = _StatusRef(bot, d["chat"], d["mid"])
+    part = f" \u00b7 {d['i']}/{d['n']}-bob" if d["n"] > 1 else ""
+    ctx = SimpleNamespace(bot=bot)
+    wjob = {"pool": True, "delivered": False, "user": d["uid"], "order": d["order"]}
+    sink: dict = {}
+    t1, t2 = B._job_var.set(wjob), admins.GLOSS_SINK.set(sink)
+    try:
+        await B._edit_status(status, f"\U0001f9fe {d['order']}{part}: fayllar yuklab olinmoqda...")
+        pages = await _load_pages(ctx, d["files"])
+        if not pages:
+            raise RuntimeError("sahifa topilmadi")
+        pdf = B.pdf_utils.build_pdf(pages[:B.MAX_PDF_PAGES])
+        await B._process_pdf(None, ctx, pdf, status, chat_id=d["chat"], src_name=d["name"], ref=d["order"])
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.exception("%s: bob bajarilmadi", job["ref"])
+        if not wjob["delivered"]:
+            await B._edit_status(status, "\u26a0\ufe0f Kutilmagan xatolik - bu bob tarjima qilinmadi." + B._fail_note())
+        return {"ok": wjob["delivered"], "res": wjob.get("res"), "names": sink, "why": pool._short(exc)}
+    finally:
+        B._job_var.reset(t1)
+        admins.GLOSS_SINK.reset(t2)
+    return {"ok": wjob["delivered"], "res": wjob.get("res"), "names": sink}
+
+
+def _refund_flags(uid: int, flags: dict, k: int = 1) -> None:
+    if flags.get("daily"):
+        admins.add_daily(uid, -k)
+    if flags.get("free"):
+        admins.add_used(uid, -k)
+    if flags.get("bal"):
+        admins.add_balance(uid, k)
+
+
+def _part_done(ref: str, i: int, ok: bool, name: str, res: dict | None) -> tuple[bool, dict | None]:
+    """Bob natijasini buyurtmaga yozadi. (yangi_mi, tugagan_buyurtma) qaytaradi."""
+    data = _data()
+    o = data.get("orders", {}).get(ref)
+    if o is None:
+        return True, None
+    done = o.setdefault("parts_done", [])
+    if i in done:
+        return False, None                       # ikkinchi marta kelgan natija
+    done.append(i)
+    if ok:
+        o["okn"] = int(o.get("okn", 0)) + 1
+        if res:
+            o["result"] = res
+    elif name:
+        o.setdefault("fails", []).append(name)
+    finished = len(done) >= int(o.get("parts", 1))
+    if finished and o.get("status") != ST_CANCEL:
+        o["status"] = ST_DONE if o.get("okn") else ST_FAIL
+        if o.get("okn"):
+            o["delivered"] = int(time.time())
+    _save(data)
+    return True, (dict(o) if finished else None)
+
+
+async def apply_pool_results(bot, results: list[dict]) -> None:
+    """Qabul qiluvchi runner: tugagan boblar bo'yicha tarix, hisob qaytarish va lug'atni yozadi."""
+    for r in results:
+        d, res = r.get("data") or {}, r.get("result") or {}
+        if not d.get("order"):
+            continue
+        ok = bool(res.get("ok"))
+        fresh, fin = _part_done(d["order"], d["i"], ok, d.get("name", ""), res.get("res"))
+        if not fresh:
+            continue
+        for key, names in (res.get("names") or {}).items():
+            try:
+                admins.put_glossary(key, names)
+            except Exception:
+                logger.warning("Lug'at yozilmadi (%s)", key, exc_info=True)
+        if not ok:
+            _refund_flags(d["uid"], d.get("flags") or {})
+            if res.get("why") == "tries":         # bob bir necha qurilmani yiqitgan (masalan xotira)
+                await B._edit_status(_StatusRef(bot, d["chat"], d["mid"]),
+                                     "\u26a0\ufe0f Bu bob bir necha urinishda ham tarjima bo\u2018lmadi." + B._fail_note())
+        if fin and int(fin.get("parts", 1)) > 1 and fin.get("fails"):
+            try:
+                await bot.send_message(
+                    d["uid"], f"\u26a0\ufe0f {d['order']}: {fin['parts']} ta bobdan {len(fin['fails'])} tasi "
+                              f"tarjima bo\u2018lmadi (hisobdan qaytarildi):\n"
+                              + "\n".join("\u2022 " + x for x in fin["fails"][:10]))
+            except TelegramError:
+                pass
+        logger.info("Hovuz natijasi: %s#%s %s (%s)", d["order"], d["i"], "yetkazildi" if ok else "bajarilmadi",
+                    res.get("w", "?"))
+
+
 def unfinished(now: float | None = None) -> list[dict]:
     now = now or time.time()
     data = _data()
     peer = now - float(data.get("peer_busy", 0)) < PEER_BUSY_MS   # GitHub hali o'z bobini tugatmoqda
     out = [o for o in data.get("orders", {}).values()
-           if o.get("status") in (ST_QUEUED, ST_WORK) and o.get("files")
+           if o.get("status") in (ST_QUEUED, ST_WORK) and o.get("files") and not o.get("pooled")
            and not (peer and o.get("status") == ST_WORK and o.get("by") not in (None, ROLE))
            and now - max(o.get("created", 0), o.get("started", 0)) < RESUME_MAX_AGE]
     return sorted(out, key=lambda o: o.get("created", 0))[:RESUME_MAX]
@@ -1070,6 +1238,19 @@ async def _user_cancel(update: Update, context, ref: str) -> None:
     uid = update.effective_user.id
     o = get_order(ref)
     if not o or (o["uid"] != uid and not admins.is_superadmin(uid)):
+        return
+    if o.get("pooled"):
+        refs = await pool.cancel(ref)
+        if not refs:
+            await update.effective_message.reply_text(
+                "Bu buyurtma allaqachon boshlangan - bekor qilish uchun admin bilan bog\u2018laning.")
+            return
+        for r in refs:
+            _part_done(ref, int(r.rsplit("#", 1)[1]), False, "", None)
+        _refund_flags(o["uid"], o.get("pflags") or {}, len(refs))
+        if len(refs) >= int(o.get("parts", 1)):
+            _set_order(ref, status=ST_CANCEL)
+        await _reply(update, f"\u274c {ref}: {len(refs)} ta bob bekor qilindi.", None, edit=True)
         return
     job = next((j for j in B._waiting if j.get("order") == ref), None)
     if job is None or o["status"] != ST_QUEUED:

@@ -868,6 +868,9 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             job["quick"] = True
         except Exception:
             logger.warning("Tarixga yozilmadi", exc_info=True)
+        # PDF/ZIP bob - ish hovuziga (bo'sh qurilma oladi); bitta rasm - shu yerda (tez)
+        if job.get("quick") and fkind != "img" and await shop.pool_quick(job):
+            return
     _waiting.append(job)
     await _queue.put(job)
     logger.info("Navbatga qo'yildi: user=%s, oldinda=%d", user_id, ahead)
@@ -1134,6 +1137,14 @@ def _mark_delivered(sent=None, caption: str = "") -> None:
     if job is None:
         return
     job["delivered"] = True
+    if job.get("pool"):
+        # Hovuz ishchisi holatni o'zi yozmaydi - natija qabul qiluvchi runnerga qaytadi (shop.apply_pool_results)
+        doc = getattr(sent, "document", None)
+        photo = getattr(sent, "photo", None)
+        if doc or photo:
+            job["res"] = {"id": doc.file_id if doc else photo[-1].file_id, "kind": "doc" if doc else "photo",
+                          "caption": caption[:900]}
+        return
     ref = job.get("order")
     if sent is None or not ref or not shop.ENABLED:
         return

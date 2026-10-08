@@ -23,6 +23,7 @@ from telegram.error import Conflict
 import admins
 import bot
 import fast_ocr
+import pool
 
 log = logging.getLogger("runner")
 
@@ -40,7 +41,9 @@ RESTART_FLAG = Path(__file__).with_name("restart.flag")
 # telefon esa KUTISH holatiga o'tadi (o'chmaydi) va noutbuk jim bo'lishi bilan o'zi davom etadi.
 # Ikkitasi bir vaqtda xabar olmaydi: pastdagi tugatguncha yuqoridagi kutadi (x-wait).
 ROLE = os.getenv("RUNNER_ROLE", "backup")
-STANDBY_EVERY = 60          # kutishdagi telefon darvozani kamroq so'raydi (Cloudflare so'rov limiti)
+# 40 s: darvozaning kutish oynasi 60 s - 60 s da so'ralganda har daqiqada ~1 s "kutayotgan yo'q" tirqishi
+# bo'lib, darvoza bekorga GitHub'ni uyg'otardi (2026-10-05)
+STANDBY_EVERY = 40          # kutishdagi telefon darvozani kamroq so'raydi (Cloudflare so'rov limiti)
 # DARVOZASIZ REJIM (2026-10-02): darvoza D1 bazasiga yozadi; hisobning bepul kunlik yozish limiti tugasa
 # (kuniga 100 000 qator, 05:00 da tiklanadi) u na xabarni saqlay oladi, na bera oladi - bot soatlab
 # "kar" bo'lib qolardi. Endi darvoza GATE_DOWN_AFTER soniya javob bermasa, ASOSIY runner (noutbuk)
@@ -106,6 +109,11 @@ async def main() -> None:
     await app.start()
     worker = asyncio.create_task(bot._queue_worker())
     log.info("Bot uyg'ondi: @%s", app.bot.username)
+    # ISH HOVUZI: bu runner xabar qabul qilsa ham, kutishda tursa ham - bo'sh o'rni bo'lsa boblarni oladi
+    if bot.shop.ENABLED and await pool.probe():
+        log.info("Ish hovuzi yoqiq: %s, %d o'rin", pool.WORKER, pool.SLOTS or bot.PARALLEL_JOBS)
+    pool_task = asyncio.create_task(pool.run(app.bot, bot.PARALLEL_JOBS, bot.shop.run_pool_chapter,
+                                             bot.shop.apply_pool_results))
     # Yarimda qolgan tarjimalar ishga tushishda EMAS, shu nusxa ishni haqiqatan olganda davom ettiriladi
     # (pastda, jarayon davomida bir marta). 2026-10-04: telefon nusxasi noutbuk ishlab turganida ham
     # ularni boshidan boshlardi - bob ikki marta yuborilardi, xotira to'lib Android Termux'ni o'chirardi.
@@ -148,7 +156,7 @@ async def main() -> None:
                 r.raise_for_status()
                 items = r.json()
                 above = r.headers.get("x-retire") == "1"       # yuqori darajadagi runner tirik
-                if above and ROLE == "backup" and not retired:
+                if above and ROLE == "backup" and not retired and not pool.ready():
                     retired = True
                     log.info("Asosiy runner ishlayapti - zaxira joriy bobini tugatib, qolganini unga beradi")
                     admins.share_for(10 ** 9)          # endi holatni ikkalamiz yozamiz - har doim yangisini o'qiymiz
@@ -162,7 +170,7 @@ async def main() -> None:
                                              f"☁️ GitHub joriy {len(bot._active)} ta ishini tugatib o‘chadi.")
                         except Exception as exc:
                             log.warning("Ishlar topshirilmadi: %s", exc)
-                if ROLE != "backup":
+                if ROLE != "backup" or pool.ready():
                     if above and not want_standby:
                         log.info("Yuqori darajadagi runner ishlayapti - ish tugagach kutishga o'tiladi")
                     want_standby = above
@@ -186,7 +194,7 @@ async def main() -> None:
                 if resumed:
                     standby = False
                     log.info("Navbat bizga o'tdi - ish davom etadi")
-                if ROLE != "backup" and not now_wait and not above and (
+                if (ROLE != "backup" or pool.ready()) and not now_wait and not above and (
                         resumed or waiting or time.time() - last_ok > 40):
                     await asyncio.to_thread(admins.pull_remote)
                     log.info("Holat darvozadan qayta o'qildi")
@@ -195,7 +203,7 @@ async def main() -> None:
                 gate_ok = True
             except Exception as exc:
                 if not direct:                     # darvozasiz rejimda har so'rovda takrorlanmasin
-                    log.warning("Gate'dan xabar olinmadi: %s", str(exc).splitlines()[0][:160])
+                    log.warning("Gate'dan xabar olinmadi: %s", pool._short(exc))
                 items = []
             if gate_ok:
                 down_since = None
@@ -244,7 +252,7 @@ async def main() -> None:
                         await asyncio.to_thread(bot.shop.mark_peer_busy, True)
                 except Exception as exc:
                     log.warning("Topshirish xatosi: %s", exc)
-            elif (ROLE != "backup" and bot.shop.ENABLED and resumed_jobs and not old and not standby
+            elif (ROLE != "backup" and bot.shop.ENABLED and not pool.ready() and resumed_jobs and not old and not standby
                     and not want_standby and time.time() - last_handoff > HANDOFF_EVERY):
                 last_handoff = time.time()
                 try:
@@ -253,7 +261,7 @@ async def main() -> None:
                         log.info("GitHub topshirgan %d ta ish navbatga olindi", n)
                         await tell_owner(f"🤝 ☁️ GitHub’dagi {n} ta ish {PLACE.get(ROLE, ROLE)}da davom etmoqda.")
                 except Exception as exc:
-                    log.warning("Topshirilgan ishlar olinmadi: %s", str(exc).splitlines()[0][:160])
+                    log.warning("Topshirilgan ishlar olinmadi: %s", pool._short(exc))
             got_direct = False
             if direct:
                 try:
@@ -277,12 +285,22 @@ async def main() -> None:
                     await asyncio.sleep(2)
             for data in items:
                 await app.update_queue.put(Update.de_json(data, app.bot))
-            busy = bool(items) or got_direct or bool(bot._waiting) or bool(bot._current["job"])
+            # Xabar qabul qiluvchi - faqat kutishda bo'lmagan, navbatini kutmayotgan runner. Qolganlari
+            # yordamchi: boblarni tarjima qiladi, lekin umumiy holatni (obuna, tarix) yozmaydi.
+            receiver = not (standby or want_standby or waiting)
+            if receiver and admins.READONLY["on"]:
+                await asyncio.to_thread(admins.pull_remote)     # yordamchi edik - avval yangi holat
+            admins.READONLY["on"] = pool.ready() and not receiver
+            pool.state["receiver"] = receiver
+            pool.state["draining"] = old
+            local_busy = bool(items) or got_direct or bool(bot._waiting) or bool(bot._current["job"])
+            busy = local_busy or pool.busy()
             if busy:
                 last_activity = time.time()
             if not busy and app.update_queue.empty() and (old or time.time() - last_activity > IDLE_EXIT):
                 break
-            if want_standby and not standby and not busy and app.update_queue.empty():
+            # hovuzdagi boblar kutishga xalaqit bermaydi - ular kutishda ham davom etadi
+            if want_standby and not standby and not local_busy and app.update_queue.empty():
                 standby = True
                 log.info("Kutish holati: xabarlarni yuqori darajadagi runner oladi")
             # darvozasiz rejimda get_updates o'zi 8 s gacha kutadi - qo'shimcha kutish shart emas
@@ -300,6 +318,7 @@ async def main() -> None:
 
     await asyncio.sleep(3)             # oxirgi javoblar yuborilib bo'linsin
     worker.cancel()
+    pool_task.cancel()
     await app.stop()
     await app.shutdown()
     if RESTART_FLAG.exists():

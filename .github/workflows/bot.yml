@@ -13,6 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
+        id: py
         with:
           python-version: "3.12"
       - name: Kutubxonalar (keshdan)
@@ -20,7 +21,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .venv
-          key: venv-${{ runner.os }}-${{ hashFiles('requirements.txt') }}-v2
+          # Python versiyasi kalitda: GitHub 3.12.x ni yangilasa .venv/bin/python havolasi buzilib,
+          # ishga tushish "No such file" (exit 127) bilan yiqilardi (2026-10-08)
+          key: venv-${{ runner.os }}-${{ steps.py.outputs.python-version }}-${{ hashFiles('requirements.txt') }}-v2
       - name: O'rnatish
         if: steps.cache.outputs.cache-hit != 'true'
         run: |
@@ -84,4 +87,9 @@ jobs:
           BOT_SLOT: "1"
           # Uxlamaydi: faqat 5 soatlik chegarada almashadi (darvoza ALWAYS_ON)
           IDLE_EXIT: "999999"
-        run: .venv/bin/python runner.py
+        run: |
+          if ! .venv/bin/python -V; then
+            echo "Kesh buzilgan - qayta o'rnatiladi"
+            rm -rf .venv && python -m venv .venv && .venv/bin/pip install -q -r requirements.txt
+          fi
+          .venv/bin/python runner.py
