@@ -261,6 +261,7 @@ def apply_gifts() -> None:
 SUB_DAYS = int(os.getenv("SUB_DAYS", "30") or 30)
 # HAFTALIK OBUNA (2026-10-01, foydalanuvchi talabi): arzonroq, qisqa muddatli tarif.
 SUB_WEEK_DAYS = int(os.getenv("SUB_WEEK_DAYS", "7") or 7)
+SUB_DAY_DAYS = 1           # KUNLIK obuna (2026-10-08, foydalanuvchi: "kunlikni ham qo'sh, narxi 5 ming")
 
 
 def _subs(data: dict) -> dict:

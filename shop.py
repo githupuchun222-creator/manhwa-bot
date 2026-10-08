@@ -245,7 +245,8 @@ async def show_pay(update: Update, context, edit=False) -> None:
                         "💳 Obuna: <b>faol emas</b>\n")
                 + f"💰 Balansingiz: <b>{admins.balance(uid)} ta bob</b>\n"
                 + f"\n♾ <b>Cheksiz obuna</b> (muddat davomida cheklovsiz):\n"
-                f"🔥 Haftalik: {_price(B.SUB_WEEK_PRICE, B.SUB_WEEK_OLD_PRICE)} / {admins.SUB_WEEK_DAYS} kun\n"
+                + (f"🔥 Kunlik: {B.SUB_DAY_PRICE} / {admins.SUB_DAY_DAYS} kun\n" if B.SUB_DAY_PRICE else "")
+                + f"🔥 Haftalik: {_price(B.SUB_WEEK_PRICE, B.SUB_WEEK_OLD_PRICE)} / {admins.SUB_WEEK_DAYS} kun\n"
                 f"💳 Oylik: {_price(B.SUB_PRICE, B.SUB_OLD_PRICE)} / {admins.SUB_DAYS} kun\n"
                 "\n📦 <b>Limitli paket</b> (muddatsiz, boblar tugaguncha):\n"
                 + admins.pack_block() + "\n"
@@ -266,6 +267,7 @@ async def show_pay(update: Update, context, edit=False) -> None:
         until = admins.sub_until(uid)
         body = (free + (f"💳 Obuna: <b>{_date(until)}</b> gacha\n" if until > time.time() else
                         "💳 Obuna: <b>faol emas</b>\n")
+                + (f"\n🔥 <b>Kunlik obuna:</b> {B.SUB_DAY_PRICE} / {admins.SUB_DAY_DAYS} kun" if B.SUB_DAY_PRICE else "")
                 + f"\n🔥 <b>Haftalik obuna:</b> {_price(B.SUB_WEEK_PRICE, B.SUB_WEEK_OLD_PRICE)}"
                 f" / {admins.SUB_WEEK_DAYS} kun\n"
                 + f"💳 <b>Oylik obuna:</b> {_price(B.SUB_PRICE, B.SUB_OLD_PRICE)}"
@@ -1586,7 +1588,8 @@ async def _admin_text(update: Update, context, text: str) -> bool:
         orders = user_orders(target)[:8]
         until = admins.sub_until(target)
         sub_line = (f"Obuna: {_date(until) + ' gacha' if until else 'yo‘q'}"
-                    f"\n(haftalik {B.SUB_WEEK_PRICE} · oylik {B.SUB_PRICE})")
+                    f"\n({'kunlik ' + B.SUB_DAY_PRICE + ' · ' if B.SUB_DAY_PRICE else ''}"
+                    f"haftalik {B.SUB_WEEK_PRICE} · oylik {B.SUB_PRICE})")
         pay_line = (f"Paket balansi: {admins.balance(target)} ta bob" if admins.PACKS_ON else sub_line)
         if admins.SUBS_TOO:
             pay_line = sub_line + "\n" + pay_line
@@ -1596,16 +1599,18 @@ async def _admin_text(update: Update, context, text: str) -> bool:
                            for o in orders) or "yo‘q"))
         rows = [[_ib("🎁 Bepul bobni qaytarish", f"sh:arestore:{target}")]]
         if admins.SUBS_TOO:
-            rows.append([_ib(f"🔥 +1 hafta ({B.SUB_WEEK_PRICE})", f"paidw:{target}"),
-                         _ib(f"💳 +1 oy ({B.SUB_PRICE})", f"paid:{target}")])
+            rows.append(([_ib(f"☀️ +1 kun ({B.SUB_DAY_PRICE})", f"paidd:{target}")] if B.SUB_DAY_PRICE else [])
+                        + [_ib(f"🔥 +1 hafta ({B.SUB_WEEK_PRICE})", f"paidw:{target}")])
+            rows.append([_ib(f"💳 +1 oy ({B.SUB_PRICE})", f"paid:{target}")])
             rows.append(B._pack_buttons(target))
             rows.append([_ib("🗑 Obuna va balansni olish", f"unpaid:{target}")])
         elif admins.PACKS_ON:
             rows.append(B._pack_buttons(target))
             rows.append([_ib("🗑 Balansni tozalash", f"unpaid:{target}")])
         else:
-            rows.append([_ib(f"🔥 +1 hafta ({B.SUB_WEEK_PRICE})", f"paidw:{target}"),
-                         _ib(f"💳 +1 oy ({B.SUB_PRICE})", f"paid:{target}")])
+            rows.append(([_ib(f"☀️ +1 kun ({B.SUB_DAY_PRICE})", f"paidd:{target}")] if B.SUB_DAY_PRICE else [])
+                        + [_ib(f"🔥 +1 hafta ({B.SUB_WEEK_PRICE})", f"paidw:{target}")])
+            rows.append([_ib(f"💳 +1 oy ({B.SUB_PRICE})", f"paid:{target}")])
             rows.append([_ib("🗑 Obunani olish", f"unpaid:{target}")])
         await update.effective_message.reply_text(info, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(rows))
     elif kind == "restore":
