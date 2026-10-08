@@ -399,6 +399,10 @@ def _parse_packs(raw: str) -> list[tuple[int, int]]:
 
 PACKS = _parse_packs(os.getenv("PACKS", ""))
 PACKS_ON = bool(PACKS)
+# OBUNA + PAKET BIRGA (2026-10-08, foydalanuvchi: "obuna bo'layotganga limitli ham qilib ber - 100 tasi 5 ming,
+# 200 tasi 10 ming, 300 tasi 13 ming"): SUBS_TOO=1 bo'lsa vaqtli obuna (haftalik/oylik, cheksiz) QOLADI va
+# yoniga bob paketlari (PACKS, muddatsiz balans) qo'shiladi. Yechish tartibi: obuna -> bepul bob -> balans.
+SUBS_TOO = PACKS_ON and os.getenv("SUBS_TOO", "") == "1"
 # CHEGIRMA (2026-10-01, foydalanuvchi: "bu oy uchun chegirma deginda"): PACKS_OLD - ustidan
 # chiziladigan eski narx, PACKS_NOTE - chegirma matni. Ikkisi ham sozlamada (env), kodda emas -
 # chegirma tugaganda PACKS_OLD/PACKS_NOTE ni olib tashlash yetarli (yoki matnni o'zgartirish).

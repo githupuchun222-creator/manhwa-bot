@@ -81,6 +81,9 @@ jobs:
           SUB_WEEK_PRICE: "15 000 so'm"
           SUB_OLD_PRICE: "50 000 so'm"
           SUB_WEEK_OLD_PRICE: "25 000 so'm"
+          # Obuna + limitli paketlar birga (2026-10-08): 100 bob 5 000, 200 bob 10 000, 300 bob 13 000 so'm
+          PACKS: "100:5000,200:10000,300:13000"
+          SUBS_TOO: "1"
           # 20 MB dan katta fayllar (bigfile.py, MTProto)
           TG_API_ID: ${{ secrets.TG_API_ID }}
           TG_API_HASH: ${{ secrets.TG_API_HASH }}

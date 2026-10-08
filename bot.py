@@ -102,7 +102,8 @@ def too_big_text(uid: int, size: int) -> str:
     text = f"⚠️ Bu fayl juda katta ({size / 2**20:.0f} MB, sizga chegara {limit // 2**20} MB)."
     if limit < (bigfile.MAX_BIG_BYTES if bigfile.enabled() else MAX_DOWNLOAD_BYTES):
         text += (f"\nBepul sinov uchun fayl {limit // 2**20} MB gacha bo'lishi kerak - bobni bo'lib yoki "
-                 "siqib yuboring. " + ("Paket olganlar" if admins.PACKS_ON else "Obunachilar")
+                 "siqib yuboring. " + ("Obuna yoki paket olganlar" if admins.SUBS_TOO else
+                                       "Paket olganlar" if admins.PACKS_ON else "Obunachilar")
                  + " katta fayllarni ham yubora oladi (💰 Narxlar va shartlar).")
     else:
         text += "\nIltimos, bobni bo'lib (yoki siqib) qayta yuboring."
@@ -241,7 +242,10 @@ def _screen(name: str, user_id: int) -> tuple[str, InlineKeyboardMarkup]:
     else:
         rows = [[_btn("🌐 Tarjima", "m:tarjima"), _btn("⚙️ Holat", "m:holat")],
                 [_btn("ℹ️ Yordam", "m:yordam")]]
-        if admins.PACKS_ON:
+        if admins.SUBS_TOO:
+            rows.insert(0, [_btn(f"💳 Obuna {SUB_WEEK_PRICE}/hafta · paket {admins.PACKS[0][0]} bob "
+                                 f"{admins.money(admins.PACKS[0][1])}", "m:obuna")])
+        elif admins.PACKS_ON:
             rows.insert(0, [_btn(f"💰 Boblar paketi - {admins.PACKS[0][0]} bob "
                                  f"{admins.money(admins.PACKS[0][1])}"
                                  + (" 🔥" if admins.PACKS_NOTE else ""), "m:obuna")])
@@ -251,7 +255,8 @@ def _screen(name: str, user_id: int) -> tuple[str, InlineKeyboardMarkup]:
         rows.append([_btn("👑 Adminlar", "m:admins")]
                     + ([_btn(_pay_btn(), "m:do:paid")] if admins.FREE_CHAPTERS or admins.PACKS_ON else []))
     status = ""
-    if admins.PACKS_ON and not admins.is_admin(user_id):
+    if (admins.PACKS_ON and not admins.is_admin(user_id)
+            and not (admins.SUBS_TOO and admins.is_paid(user_id))):
         bal = admins.balance(user_id)
         left = admins.free_left(user_id)
         if bal:
@@ -314,7 +319,7 @@ async def on_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         context.user_data["await_sub"] = True
         await update.effective_message.reply_text(
             "✍️ Paket beriladigan odamning @username'ini yoki ID raqamini yuboring - "
-            "keyin paketni tanlaysiz.\nBekor qilish: /start" if admins.PACKS_ON else
+            "keyin paketni tanlaysiz.\nBekor qilish: /start" if admins.PACKS_ON and not admins.SUBS_TOO else
             "✍️ Obunachining @username'ini yoki ID raqamini yuboring - "
             f"keyin muddatni tanlaysiz ({admins.SUB_WEEK_DAYS} yoki {admins.SUB_DAYS} kun)."
             "\nBekor qilish: /start")
@@ -888,7 +893,7 @@ SUB_OLD_PRICE = os.getenv("SUB_OLD_PRICE", "")      # bo'lsa - ustidan chizilgan
 
 def _pay_btn() -> str:
     """Admin tugmasi: paket rejimida (PACKS) - paketlar, aks holda oylik obuna."""
-    return "💰 Paketlar" if admins.PACKS_ON else "📅 Bir oylik"
+    return "💳 Obuna/paket" if admins.SUBS_TOO else "💰 Paketlar" if admins.PACKS_ON else "📅 Bir oylik"
 
 
 def _owner_name() -> str:
@@ -926,7 +931,7 @@ def _pack_panel(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
 
 def _sub_panel(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
     """Foydalanuvchiga: oylik obuna narxi va egasining akkaunti (bosganda yozishma ochiladi)."""
-    if admins.PACKS_ON:
+    if admins.PACKS_ON and not admins.SUBS_TOO:
         return _pack_panel(user_id)
     until = admins.sub_until(user_id)
     old = f"<s>{SUB_OLD_PRICE}</s> " if SUB_OLD_PRICE else ""
@@ -942,7 +947,12 @@ def _sub_panel(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
             f"🔥 <b>Haftalik</b> - {oldw}{SUB_WEEK_PRICE} / {admins.SUB_WEEK_DAYS} kun\n"
             f"🔥 <b>Oylik</b> - {old}{SUB_PRICE} / {admins.SUB_DAYS} kun\n"
             f"• Obuna muddati davomida cheklovsiz tarjima\n"
-            f"• Obunani istalgan vaqt uzaytirish mumkin\n\n{status}\n\n"
+            f"• Obunani istalgan vaqt uzaytirish mumkin\n"
+            + (f"\n📦 <b>Yoki bob paketi</b> (muddatsiz, boblar tugaguncha):\n{admins.pack_block()}\n"
+               f"• Har tarjima qilingan bob balansdan bitta yechiladi\n"
+               + (f"💰 Balansingiz: <b>{admins.balance(user_id)} ta bob</b>\n" if admins.balance(user_id) else "")
+               if admins.SUBS_TOO else "")
+            + f"\n{status}\n\n"
             f"To'lov uchun pastdagi tugmani bosib, egasiga yozing va ID'ingizni yuboring: "
             f"<code>{user_id}</code>")
     rows = []
@@ -973,13 +983,20 @@ async def _ask_owner_to_pay(context, user) -> None:
             text=(f"💳 Bepul bobi tugagan foydalanuvchi:\n\n"
                   f"Ism: {user.full_name or user.id}{handle}\nID: {user.id}\n\n"
                   + ("To'lov qilsa - pastdagi tugmalardan paketini bering."
-                     if admins.PACKS_ON else "To'lov qilsa - pastdagi tugmalardan birini bosing.")),
-            reply_markup=InlineKeyboardMarkup(
-                [_pack_buttons(user.id)] if admins.PACKS_ON else
-                [[InlineKeyboardButton(f"✅ 1 hafta ({SUB_WEEK_PRICE})", callback_data=f"paidw:{user.id}")],
-                 [InlineKeyboardButton(f"✅ 1 oy ({SUB_PRICE})", callback_data=f"paid:{user.id}")]]))
+                     if admins.PACKS_ON and not admins.SUBS_TOO else
+                     "To'lov qilsa - pastdagi tugmalardan birini bosing.")),
+            reply_markup=InlineKeyboardMarkup(_grant_rows(user.id)))
     except TelegramError as exc:
         logger.warning("Egasiga to'lov xabari yuborilmadi: %s", exc)
+
+
+def _grant_rows(target: int) -> list:
+    """Admin uchun: nima berish mumkin - obuna muddatlari va/yoki bob paketlari."""
+    subs = [[InlineKeyboardButton(f"✅ 1 hafta ({SUB_WEEK_PRICE})", callback_data=f"paidw:{target}")],
+            [InlineKeyboardButton(f"✅ 1 oy ({SUB_PRICE})", callback_data=f"paid:{target}")]]
+    if not admins.PACKS_ON:
+        return subs
+    return (subs if admins.SUBS_TOO else []) + [_pack_buttons(target)]
 
 
 def _pack_buttons(target: int) -> list:
@@ -1023,7 +1040,8 @@ async def _label(context, uid: int) -> str:
 async def _set_paid(context, target: int, grant: bool, query=None, message=None, n: int = 0,
                     days: int | None = None) -> None:
     who = await _label(context, target)
-    if admins.PACKS_ON:                  # oylik obuna emas - balansga N ta bob
+    # paket (balansga N ta bob): paket rejimida yoki aralash rejimda paket tugmasi/buyrug'i bosilganda
+    if admins.PACKS_ON and (n or not admins.SUBS_TOO):
         if grant:
             n = n or admins.PACKS[0][0]
             left = admins.add_balance(target, n)
@@ -1057,6 +1075,8 @@ async def _set_paid(context, target: int, grant: bool, query=None, message=None,
     else:
         changed = admins.remove_paid(target)
         text = f"🚫 {who} ({target}) - obuna olib tashlandi." if changed else f"{target} obunachilar ro'yxatida yo'q."
+        if admins.SUBS_TOO and admins.clear_balance(target):
+            text += "\nPaket balansi ham tozalandi."
     if query is not None:
         await query.edit_message_text(text)
     elif message is not None:
@@ -1083,6 +1103,8 @@ async def paid_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 "yoki uning ID raqamini yuboring (ID'ni u botdagi 💳 Oylik obuna bo'limida ko'radi).")
             return
         n = int(context.args[1]) if len(context.args) > 1 and context.args[1].isdigit() else 0
+        if "paket" in cmd and admins.PACKS_ON:
+            n = n or admins.PACKS[0][0]          # aralash rejimda /paket - obuna emas, balans
         await _set_paid(context, target, grant, message=update.effective_message, n=n, days=days)
         return
     if not grant:
@@ -1110,7 +1132,8 @@ async def paid_list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             + ("\n".join(html.escape(x) for x in lines) or "Hozircha hech kim.")
             + "\n\nQo'shish: tugmani bosib @username yoki ID yuboring, yoki /paket @username 200",
             reply_markup=InlineKeyboardMarkup(buttons), parse_mode="HTML")
-        return
+        if not admins.SUBS_TOO:
+            return
     now = time.time()
     lines, buttons = [], []
     for uid, until in admins.list_paid():
@@ -1723,8 +1746,9 @@ async def handle_other(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                                  "bo'lishi kerak. Uning ID raqamini yuboring yoki /start bilan bekor qiling.")
             return
         if admins.PACKS_ON:
-            await msg.reply_text(f"💰 {target} uchun paketni tanlang:",
-                                 reply_markup=InlineKeyboardMarkup([_pack_buttons(target)]))
+            await msg.reply_text(f"💳 {target} uchun obuna yoki paketni tanlang:" if admins.SUBS_TOO
+                                 else f"💰 {target} uchun paketni tanlang:",
+                                 reply_markup=InlineKeyboardMarkup(_grant_rows(target)))
             return
         await msg.reply_text(
             f"💳 {target} uchun obuna muddatini tanlang:",

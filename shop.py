@@ -40,7 +40,8 @@ B = None                      # bot moduli (bot.py setup'da beradi) - navbat, ko
 # yuklash seansi: fayl yuboriladi -> 🚀 Tarjima qilish. Nom - ixtiyoriy (tarix uchun).
 BTN_ORDER = "📖 Tarjima boshlash"
 BTN_MINE = "📂 Tarjimalarim"
-BTN_PAY = "💰 Paket va balans" if admins.PACKS_ON else "💎 Obuna va limit"
+BTN_PAY = ("💎 Obuna va paketlar" if admins.SUBS_TOO else
+           "💰 Paket va balans" if admins.PACKS_ON else "💎 Obuna va limit")
 BTN_HELP = "💬 Yordam"
 BTN_ADMIN = "⚙️ Admin panel"
 # Eski tugmalar: foydalanuvchida eski klaviatura qolgan bo'lsa ham ishlashi kerak
@@ -217,7 +218,8 @@ def _limits_text(uid: int | None = None) -> str:
     big = B.bigfile.MAX_BIG_BYTES // 2**20 if B.bigfile.enabled() else 20
     trial = B.TRIAL_MAX_BYTES // 2**20
     if uid is not None and trial < big and trial_state(uid) != "cheksiz":
-        who = "paket olganlarga" if admins.PACKS_ON else "obunachilarga"
+        who = ("obuna/paket olganlarga" if admins.SUBS_TOO else
+               "paket olganlarga" if admins.PACKS_ON else "obunachilarga")
         size_line = f"• Bitta fayl <b>{trial} MB</b> gacha (bepul sinov; {who} {big} MB)\n"
     else:
         size_line = f"• Bitta fayl <b>{big} MB</b> gacha" + (f" (bepul sinovda {trial} MB)" if trial < big and uid is None else "") + "\n"
@@ -231,13 +233,28 @@ async def show_pay(update: Update, context, edit=False) -> None:
     """💰 Paket va balans - bitta ekranda: hisob, narxlar, to'lov tartibi, admin."""
     uid = update.effective_user.id
     pages = B.MAX_PDF_PAGES if B else 60
-    head = (f"💰 <b>Paket va balans</b>\n\n"
+    head = (f"{'💎 <b>Obuna va paketlar</b>' if admins.SUBS_TOO else '💰 <b>Paket va balans</b>'}\n\n"
             f"Hisob birligi: <b>1 bob</b> = bitta yuborilgan bob (eng ko‘pi {pages} sahifa). "
             "Sahifa yoki rasm soni alohida sanalmaydi.\n\n")
     free = (f"🎁 Bepul: <b>{max(admins.FREE_CHAPTERS, admins.free_left(uid))} ta bob</b> - "
             + {"mavjud": f"{admins.free_left(uid)} tasi hali ishlatilmagan ✅", "band": "hozirgi bobda ishlatilmoqda ⏳"}.get(
                 trial_state(uid), "ishlatilgan") + "\n") if admins.FREE_CHAPTERS else ""
-    if admins.PACKS_ON:
+    if admins.SUBS_TOO:
+        until = admins.sub_until(uid)
+        body = (free + (f"💳 Obuna: <b>{_date(until)}</b> gacha\n" if until > time.time() else
+                        "💳 Obuna: <b>faol emas</b>\n")
+                + f"💰 Balansingiz: <b>{admins.balance(uid)} ta bob</b>\n"
+                + f"\n♾ <b>Cheksiz obuna</b> (muddat davomida cheklovsiz):\n"
+                f"🔥 Haftalik: {_price(B.SUB_WEEK_PRICE, B.SUB_WEEK_OLD_PRICE)} / {admins.SUB_WEEK_DAYS} kun\n"
+                f"💳 Oylik: {_price(B.SUB_PRICE, B.SUB_OLD_PRICE)} / {admins.SUB_DAYS} kun\n"
+                "\n📦 <b>Limitli paket</b> (muddatsiz, boblar tugaguncha):\n"
+                + admins.pack_block() + "\n"
+                "• Har tarjima qilingan bob balansdan bitta yechiladi\n"
+                "• Ish bajarilmasa (xato/bekor) - bob qaytariladi\n"
+                "• Obuna faol bo‘lsa balans yechilmaydi\n\n"
+                "<b>To‘lov:</b> adminga yozing, to‘lovdan keyin admin obuna yoki paketni yoqadi "
+                "(botda avtomatik to‘lov yo‘q).")
+    elif admins.PACKS_ON:
         body = (free + f"💰 Balansingiz: <b>{admins.balance(uid)} ta bob</b>\n\n"
                 "📦 <b>Paketlar</b> (oylik obuna yo‘q, muddatsiz):\n"
                 + admins.pack_block() + "\n\n"
@@ -285,8 +302,8 @@ async def show_help(update: Update, context, edit=False) -> None:
     uid = update.effective_user.id
     pages = B.MAX_PDF_PAGES if B else 60
     mb = (B.max_upload_bytes(uid) // 2**20) if B else 20
-    pay = ("paket balansi (💰 Paket va balans)" if admins.PACKS_ON
-           else "obuna (💎 Obuna va limit)")
+    pay = ("obuna yoki bob paketi (💎 Obuna va paketlar)" if admins.SUBS_TOO else
+           "paket balansi (💰 Paket va balans)" if admins.PACKS_ON else "obuna (💎 Obuna va limit)")
     text = ("💬 <b>Yordam</b>\n\n"
             "1️⃣ <b>Qanday tarjima qilaman?</b> Bobni shu chatga yuboring - natija bitta "
             "PDF bo‘lib qaytadi. Bir nechta rasmni bitta bob qilish uchun "
@@ -1406,14 +1423,15 @@ async def admin_panel(update: Update, context, edit=False) -> None:
             f"❌ Bekor: <b>{cnt[ST_CANCEL]}</b>\n"
             f"🎁 Bepul bob ishlatganlar: <b>{len(data.get('used', {}))}</b>\n"
             + (f"💰 Paket balansi borlar: <b>{len(bals)}</b> "
-               f"(jami {sum(n for _, n in bals)} ta bob)\n" if admins.PACKS_ON else
-               f"💳 Faol obunachilar: <b>{subs}</b>\n") +
+               f"(jami {sum(n for _, n in bals)} ta bob)\n" if admins.PACKS_ON else "")
+            + (f"💳 Faol obunachilar: <b>{subs}</b>\n" if admins.SUBS_TOO or not admins.PACKS_ON else "") +
             f"👤 Tanish foydalanuvchilar: <b>{len(data.get('users', {}))}</b>\n"
             f"📝 So‘rovlar: <b>{len(data.get('inquiries', {}))}</b>\n"
             f"📢 Xabar boradi: <b>{len(broadcast.targets())}</b> ta odamga")
     rows = [[_ib("📢 Hammaga xabar", "sh:abc"), _ib("📊 E‘lonlar", "sh:abclist")],
             [_ib("📋 Buyurtmalar", "sh:aorders"), _ib("👤 Foydalanuvchi", "sh:auser")],
-            [_ib("💰 Paketlar" if admins.PACKS_ON else "📅 Obunalar", "m:do:paid"),
+            [_ib("💳 Obuna/paket" if admins.SUBS_TOO else "💰 Paketlar" if admins.PACKS_ON else "📅 Obunalar",
+                 "m:do:paid"),
              _ib("👥 Adminlar", "m:do:admins")],
             [_ib("📝 Qoidalar", "m:qoidalar"), _ib("📜 Jurnal", "sh:alog")],
             [_ib("⚠️ Xato ishlar", f"sh:aorders:{ST_FAIL}")],
@@ -1567,15 +1585,22 @@ async def _admin_text(update: Update, context, text: str) -> bool:
             return True
         orders = user_orders(target)[:8]
         until = admins.sub_until(target)
-        pay_line = (f"Paket balansi: {admins.balance(target)} ta bob" if admins.PACKS_ON else
-                    f"Obuna: {_date(until) + ' gacha' if until else 'yo‘q'}"
+        sub_line = (f"Obuna: {_date(until) + ' gacha' if until else 'yo‘q'}"
                     f"\n(haftalik {B.SUB_WEEK_PRICE} · oylik {B.SUB_PRICE})")
+        pay_line = (f"Paket balansi: {admins.balance(target)} ta bob" if admins.PACKS_ON else sub_line)
+        if admins.SUBS_TOO:
+            pay_line = sub_line + "\n" + pay_line
         info = (f"👤 <b>{target}</b>\n{_trial_line(target)}\n"
                 f"{pay_line}\n\n<b>Buyurtmalar:</b>\n" +
                 ("\n".join(f"{ST_ICON.get(o['status'], '')} {o['ref']} {html.escape(_label(o))}"
                            for o in orders) or "yo‘q"))
         rows = [[_ib("🎁 Bepul bobni qaytarish", f"sh:arestore:{target}")]]
-        if admins.PACKS_ON:
+        if admins.SUBS_TOO:
+            rows.append([_ib(f"🔥 +1 hafta ({B.SUB_WEEK_PRICE})", f"paidw:{target}"),
+                         _ib(f"💳 +1 oy ({B.SUB_PRICE})", f"paid:{target}")])
+            rows.append(B._pack_buttons(target))
+            rows.append([_ib("🗑 Obuna va balansni olish", f"unpaid:{target}")])
+        elif admins.PACKS_ON:
             rows.append(B._pack_buttons(target))
             rows.append([_ib("🗑 Balansni tozalash", f"unpaid:{target}")])
         else:
