@@ -42,8 +42,27 @@ async def _get(token: str):
     return _client
 
 
+async def warm_up(token: str) -> None:
+    """Ishga tushganda MTProto ulanishini oldindan tayyorlaydi - birinchi katta fayl ~10 s tezroq boshlanadi.
+
+    O'lchov (2026-10-08, 26 MB): yuklashning o'zi ~17 s (1.5 MB/s); qismlarga bo'lib PARALLEL yuklash
+    SEKINROQ chiqdi (4 qism 43 s, 8 qism 65 s) - shuning uchun ketma-ket qoldirildi.
+    """
+    if not enabled():
+        return
+    try:
+        await _get(token)
+    except Exception as exc:
+        logger.warning("MTProto oldindan ulanmadi: %s", exc)
+
+
 async def download(file_id: str, token: str) -> bytes:
     """Bot API file_id bo'yicha faylni to'liq yuklab, bayt sifatida qaytaradi."""
+    import time
     client = await _get(token)
+    t = time.time()
     buf = await client.download_media(file_id, in_memory=True)
-    return bytes(buf.getbuffer())
+    data = bytes(buf.getbuffer())
+    dt = max(time.time() - t, 0.01)
+    logger.info("Katta fayl yuklandi: %.1f MB, %.0f s (%.2f MB/s)", len(data) / 2**20, dt, len(data) / 2**20 / dt)
+    return data

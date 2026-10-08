@@ -151,6 +151,8 @@ async def main() -> None:
     await app.initialize()
     await app.start()
     worker = asyncio.create_task(bot._queue_worker())
+    if pool.WORK:          # katta fayllar uchun MTProto ulanishi oldindan (birinchi fayl ~10 s tezroq)
+        asyncio.create_task(bot.bigfile.warm_up(bot.BOT_TOKEN))
     log.info("Bot uyg'ondi: @%s", app.bot.username)
     for note in _KEYS_NOTE:
         log.info(note)
