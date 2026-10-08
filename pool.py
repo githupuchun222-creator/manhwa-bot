@@ -14,8 +14,10 @@ qaytarish, lug'at) faqat qabul qiluvchi runner yozadi - umumiy holat fayli bir-b
 Darvoza hovuzni bilmasa (eski versiya) yoki javob bermasa - bot avvalgidek o'z navbatida ishlaydi.
 """
 import asyncio
+import ctypes
 import logging
 import os
+import threading
 import time
 
 import httpx
@@ -44,6 +46,51 @@ _running: dict[str, asyncio.Task] = {}
 _unsent: list[dict] = []             # yetkazib bo'lmagan "tugadi" xabarlari - keyingi aylanishda
 _kick = asyncio.Event()
 _pulled = {"t": 0.0}
+
+
+# TEZLIK (2026-10-08, foydalanuvchi: "tezligini maksimal oshir"): kechqurun noutbuk BATAREYADA Modern Standby'ga
+# o'tib (19:24-20:07) 4 ta bobni ushlab turdi - har biri 25-40 daqiqa, GitHub esa bo'sh qoldi.
+#  - batareyada noutbuk bittadan ortiq bob olmaydi (U-protsessor batareyada sekinlashadi);
+#  - jarayon LAG_DROP soniyadan ko'p muzlasa (uyqu), qo'lidagi boblarni TASHLAYDI - muddati o'tgach
+#    ularni to'liq tezlikdagi runner (GitHub) oladi; muzlagan noutbuk ularni soatlab sudramaydi.
+LAG_DROP = 60
+
+
+class _PowerStatus(ctypes.Structure):
+    _fields_ = [("ACLineStatus", ctypes.c_byte), ("BatteryFlag", ctypes.c_byte),
+                ("BatteryLifePercent", ctypes.c_byte), ("SystemStatusFlag", ctypes.c_byte),
+                ("BatteryLifeTime", ctypes.c_ulong), ("BatteryFullLifeTime", ctypes.c_ulong)]
+
+
+def on_battery() -> bool:
+    """Windows: quvvatlagich uzilganmi (boshqa tizimlarda - doim False)."""
+    if os.name != "nt":
+        return False
+    try:
+        st = _PowerStatus()
+        if ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(st)):
+            return st.ACLineStatus == 0
+    except Exception:
+        pass
+    return False
+
+
+def _watch_lag(loop) -> None:
+    """Alohida oqim: tizim uxlab qolganini (vaqt sakrashini) sezadi - event loop bandligidan farqli."""
+    last = time.monotonic()
+    while True:
+        time.sleep(5)
+        now = time.monotonic()
+        gap, last = now - last, now
+        if gap > LAG_DROP and _running:
+            log.warning("Jarayon %d s muzlagan (uyqu?) - %d ta bob boshqa runnerga qoldiriladi", int(gap), len(_running))
+            loop.call_soon_threadsafe(_drop_all)
+
+
+def _drop_all() -> None:
+    for ref, task in list(_running.items()):
+        _running.pop(ref, None)
+        task.cancel()
 
 
 def ready() -> bool:
@@ -112,6 +159,7 @@ async def run(bot, slots: int, execute, apply) -> None:
     """Ishchi sikli. execute(bot, job) -> natija dict; apply(bot, results) - qabul qiluvchida hisob-kitob."""
     slots = SLOTS or slots
     asyncio.create_task(_beats())
+    threading.Thread(target=_watch_lag, args=(asyncio.get_running_loop(),), daemon=True).start()
     while True:
         try:
             await asyncio.wait_for(_kick.wait(), POLL_EVERY)
@@ -125,7 +173,8 @@ async def run(bot, slots: int, execute, apply) -> None:
                 await probe()
             continue
         await _flush()
-        free = 0 if (state["draining"] or not WORK) else max(0, slots - len(_running))
+        cap = 1 if on_battery() else slots
+        free = 0 if (state["draining"] or not WORK) else max(0, min(slots, cap) - len(_running))
         receiver = state["receiver"]
         if not free and not receiver:
             continue

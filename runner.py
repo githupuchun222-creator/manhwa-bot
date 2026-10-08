@@ -145,6 +145,7 @@ async def main() -> None:
     told_down = False                  # uzilish haqida egasiga aytilganmi (bir uzilishda bir marta)
     last_handoff = 0.0                 # topshirilgan ishlar oxirgi marta qachon tekshirilgan
     last_beat = 0.0                    # GitHub: "hali ishlayapman" belgisi qachon yozilgan
+    relayed = False                    # GitHub: 5 soatlik chegarada o'rniga yangisi chaqirildimi
 
     async def tell_owner(text: str) -> None:
         try:
@@ -156,6 +157,16 @@ async def main() -> None:
         while True:
             old = (retired or time.time() - started > MAX_LIFE
                    or RESTART_FLAG.exists())
+            # GitHub o'chmasin (2026-10-08): 5 soatlik chegarada o'rniga yangisini O'ZI chaqiradi (concurrency
+            # navbatida turadi va bu tugashi bilan boshlanadi). Oldin noutbuk tirik bo'lsa darvoza GitHub'ni
+            # uyg'otmasdi - keyingi bobda 1-2 daqiqa sovuq ishga tushish kutilardi.
+            if ROLE == "backup" and not relayed and pool.ready() and time.time() - started > MAX_LIFE:
+                relayed = True
+                try:
+                    r = await c.post(f"{GATE_URL}/dispatch", headers=headers, params={"wf": "bot.yml"})
+                    log.info("5 soat bo'ldi - o'rnimga yangi GitHub runner chaqirildi (HTTP %s)", r.status_code)
+                except Exception as exc:
+                    log.warning("Yangi GitHub runner chaqirilmadi: %s", pool._short(exc))
             gate_ok = False
             try:
                 if direct and time.time() - last_probe < GATE_PROBE_EVERY:

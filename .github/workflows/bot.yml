@@ -70,6 +70,8 @@ jobs:
           SHOP_UI: "1"
           # Navbatsiz: bir vaqtda 3 ta ish, bo'sh foydalanuvchi oldinga (bot.py _pick_job)
           PARALLEL_JOBS: "4"
+          # hovuzdan bir vaqtda 2 bob (2026-10-08): 4 ta bob 4 vCPU da bir-biriga xalaqit berib har biri sekin tugardi
+          POOL_SLOTS: "2"
           # Bob bir yo'la tarjima (2026-10-01): Gemini'ga sahifa boshiga emas, 40 qatorlik bo'laklarda
           # (13 sahifali bob: 13 so'rov -> 1-2). Lite modellar ham "low" fikrlash bilan (sifat uchun).
           CHAPTER_BATCH: "1"
