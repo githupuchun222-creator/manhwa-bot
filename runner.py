@@ -20,6 +20,16 @@ import httpx
 from telegram import Update
 from telegram.error import Conflict
 
+# MAHALLIY SOZLAMA (2026-10-08): runner yonidagi local.env (KEY=QIYMAT) - bot modullaridan OLDIN o'qiladi.
+# Noutbukda sozlamalar ishga tushirish skriptida (run-local.ps1) - ular faqat vazifa to'liq qayta yoqilganda
+# yangilanardi; band kechqurun yangi narxni (kunlik obuna) qo'yib bo'lmay qoldi. Endi restart.flag yetadi.
+_LOCAL_ENV = Path(__file__).with_name("local.env")
+if _LOCAL_ENV.exists():
+    for _line in _LOCAL_ENV.read_text(encoding="utf-8").splitlines():
+        _k, _eq, _v = _line.strip().partition("=")
+        if _eq and _k and not _k.startswith("#"):
+            os.environ[_k.strip()] = _v.strip()
+
 import admins
 import bot
 import fast_ocr
