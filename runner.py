@@ -39,6 +39,11 @@ def _shared_gemini_keys() -> None:
     noutbuk, telefon va GitHub bir xil kalitlar to'plamini ishlatadi (yangi kalitni bir joyga yozish yetadi).
     Bot modullaridan OLDIN: uz_translate kalitlarni import paytida o'qiydi."""
     import urllib.request
+    try:                                   # telefon: sozlamalar .env da (config.py uni keyinroq o'qiydi)
+        from dotenv import load_dotenv
+        load_dotenv(Path(__file__).with_name(".env"))
+    except Exception:
+        pass
     url, key = os.getenv("GATE_URL", "").rstrip("/"), os.getenv("GATE_KEY", "")
     if not url or not key:
         return
