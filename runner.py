@@ -263,7 +263,9 @@ async def main() -> None:
                 except Exception as exc:
                     log.warning("Topshirilgan ishlar olinmadi: %s", pool._short(exc))
             got_direct = False
-            if direct:
+            # ketayotgan nusxa (restart.flag / 5 soat / yuqori daraja keldi) yangi xabar olmaydi - aks holda
+            # webhook bilan yangi qabul qiluvchi o'rtasida xabarlar bo'linib ketardi (2026-10-08)
+            if direct and not old:
                 try:
                     ups = await app.bot.get_updates(offset=tg_offset, timeout=8, allowed_updates=Update.ALL_TYPES)
                     for u in ups:
