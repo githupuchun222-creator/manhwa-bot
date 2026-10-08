@@ -34,6 +34,10 @@ BEAT_EVERY = 45            # darvozadagi muddat 150 s - uch marta ulguradi
 # Telefon: xotirasi kam (32 sahifali bobda Android Termux'ni o'ldirgan) - faqat kichik boblar, bittadan.
 MAX_BYTES = int(os.getenv("POOL_MAX_BYTES", str(14 * 2**20) if ROLE == "phone" else "0"))
 SLOTS = int(os.getenv("POOL_SLOTS", "1" if ROLE == "phone" else "0"))     # 0 - bot.PARALLEL_JOBS
+# POOL_WORK=0 (2026-10-08, telefon; foydalanuvchi: "telefon RAM'i to'lsa ham bot uchib qolmasin"): bu runner
+# boblarni TARJIMA QILMAYDI - faqat xabar qabul qiladi va natijalarni yozadi. Bob tarjimasi 2-4 GB xotira olib,
+# Android Termux'ni (ichidagi botni ham) o'ldirardi; og'ir ishni noutbuk/GitHub qiladi (darvoza wakeHelper).
+WORK = os.getenv("POOL_WORK", "1") != "0"
 
 state = {"ok": False, "receiver": False, "draining": False, "open": 0, "checked": 0.0}
 _running: dict[str, asyncio.Task] = {}
@@ -121,7 +125,7 @@ async def run(bot, slots: int, execute, apply) -> None:
                 await probe()
             continue
         await _flush()
-        free = 0 if state["draining"] else max(0, slots - len(_running))
+        free = 0 if (state["draining"] or not WORK) else max(0, slots - len(_running))
         receiver = state["receiver"]
         if not free and not receiver:
             continue

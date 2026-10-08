@@ -110,7 +110,8 @@ async def _gate_ready() -> None:
 async def main() -> None:
     await _gate_ready()
     started = time.time()
-    threading.Thread(target=fast_ocr.warm_up, daemon=True).start()
+    if pool.WORK:          # tarjima qilmaydigan runner (telefon) OCR modellarini xotiraga oldindan yuklamaydi
+        threading.Thread(target=fast_ocr.warm_up, daemon=True).start()
     await asyncio.to_thread(admins.pull_remote)
     await asyncio.to_thread(admins.apply_gifts)        # bir martalik sovg'a boblar (admins.GIFTS)
 
@@ -121,7 +122,8 @@ async def main() -> None:
     log.info("Bot uyg'ondi: @%s", app.bot.username)
     # ISH HOVUZI: bu runner xabar qabul qilsa ham, kutishda tursa ham - bo'sh o'rni bo'lsa boblarni oladi
     if bot.shop.ENABLED and await pool.probe():
-        log.info("Ish hovuzi yoqiq: %s, %d o'rin", pool.WORKER, pool.SLOTS or bot.PARALLEL_JOBS)
+        log.info("Ish hovuzi yoqiq: %s, %s", pool.WORKER,
+                 f"{pool.SLOTS or bot.PARALLEL_JOBS} o'rin" if pool.WORK else "faqat qabul qiluvchi (tarjima qilmaydi)")
     pool_task = asyncio.create_task(pool.run(app.bot, bot.PARALLEL_JOBS, bot.shop.run_pool_chapter,
                                              bot.shop.apply_pool_results))
     # Yarimda qolgan tarjimalar ishga tushishda EMAS, shu nusxa ishni haqiqatan olganda davom ettiriladi
