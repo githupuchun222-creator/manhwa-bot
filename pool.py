@@ -40,6 +40,10 @@ SLOTS = int(os.getenv("POOL_SLOTS", "1" if ROLE == "phone" else "0"))     # 0 - 
 # boblarni TARJIMA QILMAYDI - faqat xabar qabul qiladi va natijalarni yozadi. Bob tarjimasi 2-4 GB xotira olib,
 # Android Termux'ni (ichidagi botni ham) o'ldirardi; og'ir ishni noutbuk/GitHub qiladi (darvoza wakeHelper).
 WORK = os.getenv("POOL_WORK", "1") != "0"
+# KATTA FAYLLAR AVVAL GITHUB'GA (2026-10-08): 20 MB dan katta bobni GitHub birinchi oladi (internet tez va barqaror);
+# noutbuk uni BIG_WAIT soniya hech kim olmasa oladi (GitHub band/o'chiq bo'lsa ham bob kutib qolmaydi).
+BIG_WAIT = int(os.getenv("POOL_BIG_WAIT", "180" if ROLE == "primary" else "0"))
+PREFER_BIG = os.getenv("POOL_PREFER_BIG", "1" if ROLE == "backup" else "0") == "1"
 
 state = {"ok": False, "receiver": False, "draining": False, "open": 0, "checked": 0.0}
 _running: dict[str, asyncio.Task] = {}
@@ -179,7 +183,8 @@ async def run(bot, slots: int, execute, apply) -> None:
         if not free and not receiver:
             continue
         try:
-            got = await _post("claim", n=free, res="1" if receiver else "0", max=MAX_BYTES or "")
+            got = await _post("claim", n=free, res="1" if receiver else "0", max=MAX_BYTES or "",
+                              bigwait=BIG_WAIT, prefer_big="1" if PREFER_BIG else "0")
         except Exception as exc:
             log.warning("Hovuzdan ish olinmadi: %s", _short(exc))
             if "404" in str(exc):
