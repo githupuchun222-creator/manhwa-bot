@@ -30,6 +30,33 @@ if _LOCAL_ENV.exists():
         if _eq and _k and not _k.startswith("#"):
             os.environ[_k.strip()] = _v.strip()
 
+
+_KEYS_NOTE: list[str] = []          # log hali sozlanmagan - main() da yoziladi
+
+
+def _shared_gemini_keys() -> None:
+    """GEMINI KALITLARI (2026-10-08): darvozadagi umumiy ro'yxat (/keys) shu runnerning kalitlariga qo'shiladi -
+    noutbuk, telefon va GitHub bir xil kalitlar to'plamini ishlatadi (yangi kalitni bir joyga yozish yetadi).
+    Bot modullaridan OLDIN: uz_translate kalitlarni import paytida o'qiydi."""
+    import urllib.request
+    url, key = os.getenv("GATE_URL", "").rstrip("/"), os.getenv("GATE_KEY", "")
+    if not url or not key:
+        return
+    try:
+        req = urllib.request.Request(f"{url}/keys", headers={"x-key": key, "user-agent": "manhwa-bot/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            extra = [k.strip() for k in r.read().decode().split(",") if len(k.strip()) > 20]
+    except Exception as exc:
+        _KEYS_NOTE.append(f"Umumiy Gemini kalitlari olinmadi: {exc}")
+        return
+    own = [k.strip() for k in os.getenv("GEMINI_API_KEY", "").split(",") if k.strip()]
+    merged = list(dict.fromkeys(own + [k.strip() for k in extra]))
+    os.environ["GEMINI_API_KEY"] = ",".join(merged)
+    _KEYS_NOTE.append(f"Gemini kalitlari: {len(merged)} ta (o'zida {len(own)}, umumiy {len(extra)})")
+
+
+_shared_gemini_keys()
+
 import admins
 import bot
 import fast_ocr
@@ -120,6 +147,8 @@ async def main() -> None:
     await app.start()
     worker = asyncio.create_task(bot._queue_worker())
     log.info("Bot uyg'ondi: @%s", app.bot.username)
+    for note in _KEYS_NOTE:
+        log.info(note)
     # ISH HOVUZI: bu runner xabar qabul qilsa ham, kutishda tursa ham - bo'sh o'rni bo'lsa boblarni oladi
     if bot.shop.ENABLED and await pool.probe():
         log.info("Ish hovuzi yoqiq: %s, %s", pool.WORKER,
