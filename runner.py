@@ -78,6 +78,7 @@ POLL_EVERY = 1.5
 # runner ishini TUGATIB chiqadi, keyin uni ko'targan skript (run-local.ps1 / run4.sh)
 # darhol yangi kod bilan qaytadan yoqadi. Foydalanuvchining bobi uzilib qolmaydi.
 RESTART_FLAG = Path(__file__).with_name("restart.flag")
+POOL_GRACE = 300              # hovuz shuncha soniya javob bermasa - GitHub eski tartibda (retire) ketadi
 # UCH DARAJA (2026-10-02): noutbuk RUNNER_ROLE=primary, telefon RUNNER_ROLE=phone, GitHub - backup.
 # Yuqori daraja tirik ekan darvoza pastdagiga ish bermaydi (x-retire): GitHub nusxasi o'chadi,
 # telefon esa KUTISH holatiga o'tadi (o'chmaydi) va noutbuk jim bo'lishi bilan o'zi davom etadi.
@@ -182,6 +183,7 @@ async def main() -> None:
     last_handoff = 0.0                 # topshirilgan ishlar oxirgi marta qachon tekshirilgan
     last_beat = 0.0                    # GitHub: "hali ishlayapman" belgisi qachon yozilgan
     relayed = False                    # GitHub: 5 soatlik chegarada o'rniga yangisi chaqirildimi
+    pool_off = None                    # GitHub: hovuz qachondan beri javob bermayapti
 
     async def tell_owner(text: str) -> None:
         try:
@@ -215,7 +217,15 @@ async def main() -> None:
                 r.raise_for_status()
                 items = r.json()
                 above = r.headers.get("x-retire") == "1"       # yuqori darajadagi runner tirik
-                if above and ROLE == "backup" and not retired and not pool.ready():
+                # OSILGAN YORDAMCHI (2026-10-09): hovuz tekshiruvi BIR MARTA xato bersa (qisqa tarmoq uzilishi)
+                # GitHub o'zini butunlay "ketayotgan" deb belgilab, qaytib bob olmasdi - 40 ta bob bir soat
+                # faqat noutbukda qolgan. Endi hovuz POOL_GRACE dan beri ishlamayotgan bo'lsagina ketadi.
+                if pool.ready():
+                    pool_off = None
+                elif pool_off is None:
+                    pool_off = time.time()
+                if above and ROLE == "backup" and not retired and not pool.ready() and (
+                        not pool.WANTED or time.time() - pool_off > POOL_GRACE):
                     retired = True
                     log.info("Asosiy runner ishlayapti - zaxira joriy bobini tugatib, qolganini unga beradi")
                     admins.share_for(10 ** 9)          # endi holatni ikkalamiz yozamiz - har doim yangisini o'qiymiz

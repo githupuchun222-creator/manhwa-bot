@@ -187,7 +187,8 @@ async def run(bot, slots: int, execute, apply) -> None:
                               bigwait=BIG_WAIT, prefer_big="1" if PREFER_BIG else "0")
         except Exception as exc:
             log.warning("Hovuzdan ish olinmadi: %s", _short(exc))
-            if "404" in str(exc):
+            # faqat HAQIQIY 404 (xato matnidagi manzilda ishchi nomi bor: "backup-1404-..." ham "404" edi)
+            if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 404:
                 state["ok"] = False            # darvoza eski versiyaga qaytarilgan
             continue
         state["open"] = got.get("open", 0)
