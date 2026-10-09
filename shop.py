@@ -44,10 +44,10 @@ BTN_PAY = ("💎 Obuna va paketlar" if admins.SUBS_TOO else
            "💰 Paket va balans" if admins.PACKS_ON else "💎 Obuna va limit")
 BTN_HELP = "💬 Yordam"
 BTN_APP = "📱 Ilovani yuklab olish"
-# Ilova APK'si Telegram'da bir marta yuklangan (2026-10-09, 285 MB - bot 50 MB dan kattasini o'zi yuklay olmaydi),
+# Ilova APK'si Telegram'da yuklangan (2026-10-09, 1.6, 285 MB - bot 50 MB dan kattasini o'zi yuklay olmaydi),
 # bot uni tayyor nusxasidan (file_id) beradi. file_id faqat shu botda ishlaydi - sir emas. Yangi versiya:
 # super admin .apk faylni shu botga yuboradi -> admins.put_app (bu standart qiymatdan ustun turadi).
-APP_DEFAULT = {"file_id": "BQACAgIAAxkDAAIiImrIe60emCVo6ppSlgG4QS2Zbh9BAAKNpAACs9pASiu4TOkm5PbmHgQ", "name": "Manhwa-tarjima-1.5.apk"}
+APP_DEFAULT = {"file_id": "BQACAgIAAxkDAAIjTGrIkDNY1EWsrPVFcxMcY05uihe4AAJNpQACs9pAShu7_nxl9ccrHgQ", "name": "Manhwa-tarjima-1.6.apk"}
 APP_CAPTION = ("📱 <b>Manhwa tarjima ilovasi</b>\n\n"
                "Boblarni telefoningizning o‘zida tarjima qiladi: fayl hech qayerga yuklanmaydi, navbat yo‘q.\n\n"
                "<b>O‘rnatish:</b> faylni yuklab oling va oching → «O‘rnatish». Telefon «noma’lum manba» yoki "
