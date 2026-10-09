@@ -1570,18 +1570,25 @@ async def _process_pdf(update: Update | None, context: ContextTypes.DEFAULT_TYPE
                f"vaqt: {elapsed // 60}:{elapsed % 60:02d}.")
     if failed:
         caption += f"\nTarjima qilinmagan sahifalar (aslicha qoldi): {', '.join(map(str, failed))}"
-    # Ochiq hisobot: nimaga ishonish mumkin, nimani ko'rib chiqish kerak
+    # Ochiq hisobot: nimaga ishonish mumkin, nimani ko'rib chiqish kerak.
+    # Faqat adminlarga - obunachi ichki ogohlantirishlarni ko'rmaydi (logda qoladi).
+    notes = ""
     st = uz_translate.stats()
     if st["google"] and (st["ai"] + st["google"]):
         share = 100 * st["google"] // (st["ai"] + st["google"])
         if share >= 10:
-            caption += (f"\n\u26a0\ufe0f Matnning {share}% i AI'siz (Google) tarjima qilindi - "
-                        "AI limiti tugagan yoki band bo'lgan.")
+            notes += (f"\n\u26a0\ufe0f Matnning {share}% i AI'siz (Google) tarjima qilindi - "
+                      "AI limiti tugagan yoki band bo'lgan.")
     if report.get("tiny"):
-        caption += (f"\n\u26a0\ufe0f {report['tiny']} ta joyda matn pufakchaga sig'masdan juda "
-                    "mayda chiqdi - o'sha sahifalarni tekshirib ko'ring.")
+        notes += (f"\n\u26a0\ufe0f {report['tiny']} ta joyda matn pufakchaga sig'masdan juda "
+                  "mayda chiqdi - o'sha sahifalarni tekshirib ko'ring.")
     if budget["vlm"] <= 0 and VLM_BUDGET_PER_PDF:
-        caption += "\nBa'zi qiyin joylar tezlik uchun o'tkazib yuborilgan bo'lishi mumkin."
+        notes += "\nBa'zi qiyin joylar tezlik uchun o'tkazib yuborilgan bo'lishi mumkin."
+    if notes:
+        logger.info("Ogohlantirishlar (%s, chat %s):%s", ref or src_name, chat_id,
+                    notes.replace("\n", " | "))
+        if admins.is_admin(chat_id):
+            caption += notes
 
     await _edit_status(status_msg, "Yuborilmoqda...")
     for attempt in range(4):
