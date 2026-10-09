@@ -522,3 +522,19 @@ def put_style(style: dict | None) -> None:
     else:
         data.pop("style", None)
     _save(data)
+
+
+# ILOVA FAYLI (2026-10-09, "📱 Ilovani yuklab olish" tugmasi): Telegram'dagi tayyor APK nusxasi (file_id) va nomi.
+# Super admin botga yangi .apk yuborsa (yoki botdan kelgan faylni qaytarib forward qilsa) - shu yerda yangilanadi.
+def get_app() -> dict:
+    app = _load().get("app")
+    return dict(app) if isinstance(app, dict) else {}
+
+
+def put_app(app: dict | None) -> None:
+    data = _load()
+    if app:
+        data["app"] = app
+    else:
+        data.pop("app", None)
+    _save(data)

@@ -43,6 +43,16 @@ BTN_MINE = "📂 Tarjimalarim"
 BTN_PAY = ("💎 Obuna va paketlar" if admins.SUBS_TOO else
            "💰 Paket va balans" if admins.PACKS_ON else "💎 Obuna va limit")
 BTN_HELP = "💬 Yordam"
+BTN_APP = "📱 Ilovani yuklab olish"
+# Ilova APK'si Telegram'da bir marta yuklangan (2026-10-09, 285 MB - bot 50 MB dan kattasini o'zi yuklay olmaydi),
+# bot uni tayyor nusxasidan (file_id) beradi. file_id faqat shu botda ishlaydi - sir emas. Yangi versiya:
+# super admin .apk faylni shu botga yuboradi -> admins.put_app (bu standart qiymatdan ustun turadi).
+APP_DEFAULT = {"file_id": "BQACAgIAAxkDAAIiImrIe60emCVo6ppSlgG4QS2Zbh9BAAKNpAACs9pASiu4TOkm5PbmHgQ", "name": "Manhwa-tarjima-1.5.apk"}
+APP_CAPTION = ("📱 <b>Manhwa tarjima ilovasi</b>\n\n"
+               "Boblarni telefoningizning o‘zida tarjima qiladi: fayl hech qayerga yuklanmaydi, navbat yo‘q.\n\n"
+               "<b>O‘rnatish:</b> faylni yuklab oling va oching → «O‘rnatish». Telefon «noma’lum manba» yoki "
+               "Play Protect haqida so‘rasa - ruxsat bering.\n"
+               "<b>Kirish:</b> ilovada «Yangi hisob ochish»ni bosing, login va parol o‘ylab toping. Birinchi bob bepul.")
 BTN_ADMIN = "⚙️ Admin panel"
 # Eski tugmalar: foydalanuvchida eski klaviatura qolgan bo'lsa ham ishlashi kerak
 LEGACY_BUTTONS = {
@@ -56,7 +66,7 @@ LEGACY_BUTTONS = {
     "📂 Buyurtmalarim": BTN_MINE,
 }
 BTN_FREE, BTN_PRICE, BTN_CONTACT = BTN_PAY, BTN_PAY, BTN_HELP      # eski nomlar (moslik uchun)
-MENU_BUTTONS = {BTN_ORDER, BTN_MINE, BTN_PAY, BTN_HELP, BTN_ADMIN} | set(LEGACY_BUTTONS)
+MENU_BUTTONS = {BTN_ORDER, BTN_MINE, BTN_PAY, BTN_HELP, BTN_APP, BTN_ADMIN} | set(LEGACY_BUTTONS)
 
 # Bir xil so'zlar (hamma ekranda bir xil ishlashi uchun)
 TXT_BACK, TXT_HOME, TXT_CANCEL = "⬅️ Orqaga", "🏠 Bosh menyu", "❌ Bekor qilish"
@@ -149,9 +159,9 @@ def main_keyboard(uid: int) -> ReplyKeyboardMarkup:
     """Doimiy pastki klaviatura: asosiy amal (tarjima) eng tepada va eng keng."""
     rows = [[KeyboardButton(BTN_ORDER)],
             [KeyboardButton(BTN_MINE), KeyboardButton(BTN_PAY)],
-            [KeyboardButton(BTN_HELP)]]
+            [KeyboardButton(BTN_APP), KeyboardButton(BTN_HELP)]]
     if admins.is_superadmin(uid):
-        rows[-1].append(KeyboardButton(BTN_ADMIN))
+        rows.append([KeyboardButton(BTN_ADMIN)])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True, is_persistent=True)
 
 
@@ -639,6 +649,19 @@ async def _begin(update: Update, context, uid: int, title: str | None = None) ->
     await _show_panel(update, context, draft)
 
 
+async def send_app(update: Update, context) -> None:
+    """Ilova APK faylini yuboradi (Telegram'dagi tayyor nusxadan - qayta yuklanmaydi)."""
+    msg = update.effective_message
+    app = admins.get_app() or APP_DEFAULT
+    try:
+        await msg.reply_document(app["file_id"], caption=APP_CAPTION, parse_mode="HTML")
+    except TelegramError as exc:
+        logger.warning("Ilova fayli yuborilmadi: %s", exc)
+        await msg.reply_text("Ilova faylini hozir yuborib bo‘lmadi. Birozdan so‘ng qayta urinib ko‘ring"
+                             + (" yoki .apk faylni shu chatga qaytadan yuboring." if admins.is_superadmin(
+                                 update.effective_user.id) else "."))
+
+
 async def on_text(update: Update, context) -> bool:
     """Menyu tugmalari va seans matni. True - qabul qilindi."""
     msg = update.effective_message
@@ -656,6 +679,8 @@ async def on_text(update: Update, context) -> bool:
             await show_pay(update, context)
         elif btn == BTN_HELP:
             await show_help(update, context)
+        elif btn == BTN_APP:
+            await send_app(update, context)
         elif btn == BTN_ADMIN:
             await admin_panel(update, context)
         return True
@@ -699,6 +724,19 @@ async def on_file(update: Update, context) -> bool:
         context.user_data["bcdraft"] = draft
         body, markup = broadcast.draft_preview(draft)
         await msg.reply_text(body, parse_mode="HTML", reply_markup=markup)
+        return True
+    doc = update.effective_message.document
+    if doc and (doc.file_name or "").lower().endswith(".apk"):
+        # .apk tarjima qilinmaydi. Super admin yuborsa - "Ilovani yuklab olish" endi shu faylni beradi.
+        if admins.is_superadmin(uid):
+            admins.put_app({"file_id": doc.file_id, "name": doc.file_name, "size": doc.file_size or 0})
+            await update.effective_message.reply_text(
+                f"✅ Ilova fayli yangilandi: <b>{html.escape(doc.file_name)}</b> "
+                f"({(doc.file_size or 0) // 2**20} MB).\n<b>{BTN_APP}</b> tugmasi endi shu faylni beradi.",
+                parse_mode="HTML")
+        else:
+            await update.effective_message.reply_text("Bu ilova fayli - uni tarjima qilib bo‘lmaydi. "
+                                                      "Bob uchun PDF, ZIP yoki rasm yuboring.")
         return True
     draft = _draft(uid)
     if not draft or draft.get("step") != "upload":
