@@ -827,10 +827,7 @@ def _call_gemini_once(k: int, key: str, spec: str, system: str, user: str, n_exp
     return None
 
 
-def _gemini(english: list[str], drafts: list[str]) -> list[str] | None:
-    if time.time() - _S().last > NEW_CHAPTER_GAP:
-        new_chapter()
-    _S().last = time.time()
+def _polish_user(english: list[str], drafts: list[str]) -> str:
     user = ("Each item is [English source, rough machine translation]. The machine translation is "
             "usually accurate but stiff and literal. Write the final natural Uzbek line:\n"
             + json.dumps([[e, d] for e, d in zip(english, drafts)], ensure_ascii=False))
@@ -840,6 +837,14 @@ def _gemini(english: list[str], drafts: list[str]) -> list[str] | None:
     if _S().names:
         user = ("Names already used in this chapter - write them EXACTLY like this:\n"
                 + json.dumps(dict(list(_S().names.items())[-40:]), ensure_ascii=False) + "\n\n" + user)
+    return user
+
+
+def _gemini(english: list[str], drafts: list[str]) -> list[str] | None:
+    if time.time() - _S().last > NEW_CHAPTER_GAP:
+        new_chapter()
+    _S().last = time.time()
+    user = _polish_user(english, drafts)
     if not _gemini_ready():
         return None
     system = _system_prompt()
@@ -868,6 +873,75 @@ def _gemini(english: list[str], drafts: list[str]) -> list[str] | None:
         finally:
             pool.shutdown(wait=False)          # g'olib topildi - qolganlarini kutib o'tirmaymiz
         time.sleep(2 + 3 * attempt)
+    return None
+
+
+# GROQ ZAXIRASI (2026-10-09, foydalanuvchi kalit berdi): Gemini limiti tugagan yoki band bo'lsa bo'lak
+# Google'da qolardi (bitta bobda matnning 77% i). Endi oraga Groq kiradi. 40 gaplik sinov: gpt-oss-120b
+# 28 qatorni yaxshilaydi ("Xavfsiz baron iznik!" -> "Baron Iznikni himoya qiling!"), lekin ba'zan xato
+# qiladi (imlo, duduqlanish tushadi) - shuning uchun faqat ZAXIRA. qwen3.8-27b va gpt-oss-20b qoralamani
+# deyarli o'zgartirmaydi. Bepul limit: daqiqasiga 8000 token/model (40 qatorli bo'lak ~3000 token).
+GROQ_KEYS = [k.strip() for k in os.getenv("GROQ_API_KEY", "").split(",") if k.strip()]
+GROQ_MODELS = [m for m in os.getenv("GROQ_MODELS", "openai/gpt-oss-120b").split(",") if m]
+GROQ_TIMEOUT = 40
+GROQ_WAIT = 20                    # daqiqalik limit shuncha soniyada ochilsa - kutib, bir marta qayta so'raladi
+_groq_cool: dict[tuple[int, str], float] = {}
+_CURLY = re.compile("[‘’ʻʼ`]")
+
+
+def _call_groq_once(k: int, key: str, model: str, system: str, user: str, n_expected: int) -> list | None:
+    body = {"model": model, "temperature": 0.3, "response_format": {"type": "json_object"},
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
+    if "gpt-oss" in model:
+        body["reasoning_effort"] = "low"
+    for attempt in range(2):
+        req = urllib.request.Request(
+            "https://api.groq.com/openai/v1/chat/completions", data=json.dumps(body).encode("utf-8"),
+            headers={"authorization": "Bearer " + key, "content-type": "application/json",
+                     "user-agent": "manhwa-bot/1.0"})
+        try:
+            with urllib.request.urlopen(req, timeout=GROQ_TIMEOUT) as r:
+                data = json.loads(r.read().decode("utf-8"))
+            out = _parse_list(data["choices"][0]["message"]["content"] or "")
+            if isinstance(out, list) and len(out) == n_expected:
+                return out
+            logger.info("Groq %s: javob mos emas", model)
+            return None
+        except urllib.error.HTTPError as exc:
+            try:
+                wait = float(exc.headers.get("retry-after") or 0)
+            except ValueError:
+                wait = 0.0
+            if exc.code == 429 and 0 < wait <= GROQ_WAIT and attempt == 0:
+                time.sleep(wait + 0.5)
+                continue
+            # 429: aytilgan vaqtgacha (kunlik limit bo'lsa uzoq); kalit/model yopiq - bir kun; qolgani 5 daqiqa
+            rest = max(wait, 30) if exc.code == 429 else 24 * 3600 if exc.code in (400, 401, 403, 404) else 300
+            _groq_cool[(k, model)] = time.time() + rest
+            logger.info("Groq %s (kalit %d) ishlamadi (HTTP %s)", model, k + 1, exc.code)
+            return None
+        except Exception as exc:
+            _groq_cool[(k, model)] = time.time() + 120
+            logger.info("Groq %s (kalit %d) ishlamadi (%s)", model, k + 1, str(exc)[:120])
+            return None
+    return None
+
+
+def _groq(english: list[str], drafts: list[str]) -> list[str] | None:
+    if not GROQ_KEYS:
+        return None
+    system, user = _system_prompt(), _polish_user(english, drafts)
+    for k, key in enumerate(GROQ_KEYS):
+        for model in GROQ_MODELS:
+            if _groq_cool.get((k, model), 0) > time.time():
+                continue
+            out = _call_groq_once(k, key, model, system, user, len(english))
+            if out is not None:
+                _S().last = time.time()
+                _S().ctx.extend(english)
+                del _S().ctx[:-8]
+                # model qiyshiq apostrof yozadi - shriftda va qoidalarda to'g'risi (') kerak
+                return [_same_names(_CURLY.sub("'", " ".join(str(s or "").split()))) for s in out]
     return None
 
 
@@ -932,6 +1006,8 @@ def _polish_part(english: list[str], drafts: list[str]) -> list[str]:
     if part is None and len(english) > 20 and _gemini_ready():
         half = len(english) // 2
         return _polish_part(english[:half], drafts[:half]) + _polish_part(english[half:], drafts[half:])
+    if part is None:
+        part = _groq(english, drafts)                        # Gemini tugagan/band - zaxira AI
     if part is None:
         _S().stats["google"] += len(drafts)                  # shu bo'lak Google'da qoladi
         return drafts
