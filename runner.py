@@ -73,7 +73,16 @@ GATE_URL = os.environ["GATE_URL"].rstrip("/")
 GATE_KEY = os.environ["GATE_KEY"]
 IDLE_EXIT = int(os.getenv("IDLE_EXIT", "300"))        # shuncha soniya ish bo'lmasa - o'chadi
 MAX_LIFE = int(os.getenv("MAX_LIFE", str(5 * 3600)))  # GitHub chegarasi 6 soat
-POLL_EVERY = 1.5
+# Bosh (xabar qabul qiluvchi) darvozani shuncha soniyada so'raydi. GitHub doimiy bosh bo'lganda 1,5 s =
+# kuniga ~57 600 so'rov (Cloudflare bepul limiti 100 000, hisobdagi hamma xizmat uchun umumiy) - bot.yml da 3 s.
+POLL_EVERY = float(os.getenv("POLL_EVERY", "1.5"))
+# FAQAT YORDAMCHI (2026-10-10, foydalanuvchi: "noutbukim va telefonim har doim internetda emas"; bosh - GitHub).
+# HELPER_ONLY=1 bo'lgan qurilma darajalar zanjirida QATNASHMAYDI: darvozaga /pending so'rovi yubormaydi (demak
+# "tirik bosh" bo'lib ko'rinmaydi va GitHub'ni kutishga o'tkazmaydi), xabar qabul qilmaydi, buyurtmalar ro'yxatiga
+# yozmaydi. Faqat hovuzdan bob olib, tarjima qilib, foydalanuvchiga yuboradi. O'chsa/uxlasa/interneti uzilsa -
+# qo'lidagi bob 150 s dan keyin navbatga qaytadi, boshlik esa hech qachon almashmaydi (oldin har almashuvda
+# holat bosib yozilishi mumkin edi: yetkazilgan buyurtmalar "tugallanmagan" bo'lib qolgan).
+HELPER_ONLY = os.getenv("HELPER_ONLY", "") == "1"
 # YUMSHOQ QAYTA ISHGA TUSHIRISH (2026-10-02): kod yangilangach shu fayl yaratiladi -
 # runner ishini TUGATIB chiqadi, keyin uni ko'targan skript (run-local.ps1 / run4.sh)
 # darhol yangi kod bilan qaytadan yoqadi. Foydalanuvchining bobi uzilib qolmaydi.
@@ -141,7 +150,50 @@ async def _gate_ready() -> None:
             await asyncio.sleep(60)
 
 
+async def _helper_main() -> None:
+    """Faqat yordamchi: xabarsiz, ro'yxatga yozmasdan - hovuzdagi boblarni bajaradi (HELPER_ONLY=1)."""
+    if pool.WORK:
+        threading.Thread(target=fast_ocr.warm_up, daemon=True).start()
+    # Oldin bosh bo'lgan bo'lsak va oxirgi holat darvozaga yozilmay qolgan bo'lsa (.dirty) - pull_remote avval
+    # uni yozadi; aks holda darvozadagi yangi nusxani oladi. Shundan keyin bu qurilma darvozaga YOZMAYDI.
+    await asyncio.to_thread(admins.pull_remote)
+    admins.READONLY["on"] = True
+    app = bot._build_app(bot.BOT_TOKEN)
+    await app.initialize()
+    if pool.WORK:
+        asyncio.create_task(bot.bigfile.warm_up(bot.BOT_TOKEN))
+    log.info("Bot uyg'ondi (faqat yordamchi): @%s", app.bot.username)
+    for note in _KEYS_NOTE:
+        log.info(note)
+    pool.state.update(receiver=False, draining=False)
+    await pool.probe()
+    log.info("Yordamchi rejim: %s, %s o'rin - xabar qabul qilmaydi, ro'yxatga yozmaydi",
+             pool.WORKER, pool.SLOTS or bot.PARALLEL_JOBS)
+
+    def start() -> asyncio.Task:
+        return asyncio.create_task(pool.run(app.bot, bot.PARALLEL_JOBS, bot.shop.run_pool_chapter,
+                                            bot.shop.apply_pool_results))
+    task = start()
+    while True:
+        pool.state["receiver"] = False
+        pool.state["draining"] = RESTART_FLAG.exists()
+        if pool.state["draining"] and not pool.busy():
+            break
+        if pool.WANTED and task.done():
+            exc = None if task.cancelled() else task.exception()
+            log.error("Hovuz sikli to'xtagan edi (%r) - qayta yoqildi", exc)
+            task = start()
+        await asyncio.sleep(2)
+    task.cancel()
+    await asyncio.sleep(2)             # oxirgi natija darvozaga yetib olsin
+    await app.shutdown()
+    RESTART_FLAG.unlink(missing_ok=True)
+    log.info("Ish tugadi - yangi kod bilan qayta ishga tushiriladi")
+
+
 async def main() -> None:
+    if HELPER_ONLY:
+        return await _helper_main()
     await _gate_ready()
     started = time.time()
     if pool.WORK:          # tarjima qilmaydigan runner (telefon) OCR modellarini xotiraga oldindan yuklamaydi
