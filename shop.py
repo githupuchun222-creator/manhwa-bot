@@ -1172,11 +1172,15 @@ async def apply_pool_results(bot, results: list[dict]) -> None:
 LOST_AGE = int(os.getenv("LOST_AGE", "1800"))                  # bundan yosh buyurtma hali tekshirilmaydi
 LOST_MAX_AGE = int(os.getenv("LOST_MAX_AGE", str(48 * 3600)))  # bundan eskisi tiriltirilmaydi
 LOST_BATCH = 20                                                # bitta so'rovda (darvozaning ichki so'rov chegarasi)
+# O'CHIQ (2026-10-10): birinchi ishga tushishda 35-37 soatlik, ALLAQACHON YETKAZILGAN 12 buyurtmani (20 bob) ham
+# qayta navbatga qo'ydi - eski buyurtmalarda parts_done bazada yo'qolgan (holatni boshqa runner bosib yozgan),
+# ya'ni "tugallanmagan" belgisiga ishonib bo'lmaydi. Sababi tuzatilmaguncha faqat LOST_REQUEUE=1 bilan yoqiladi.
+LOST_ON = os.getenv("LOST_REQUEUE", "") == "1"
 
 
 async def requeue_lost(bot) -> int:
     """Hovuzdan tushib qolgan boblarni qayta navbatga qo'yadi. Nechta bob qo'shilganini qaytaradi."""
-    if not pool.ready():
+    if not LOST_ON or not pool.ready():
         return 0
     now = time.time()
     jobs: list[dict] = []
