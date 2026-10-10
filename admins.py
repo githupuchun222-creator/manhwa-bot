@@ -2,6 +2,7 @@ import contextvars
 import json
 import logging
 import os
+import threading
 import time as _time
 import urllib.request
 
@@ -27,6 +28,34 @@ def _remote(method: str, body: bytes | None = None) -> dict | None:
 # qayta ishga tushish eski nusxani o'qib, yangi holatni (buyurtmalar, obuna, hisob) bosib ketmaydi.
 _DIRTY = ADMINS_FILE.with_name(ADMINS_FILE.name + ".dirty")
 
+# FAYL BO'SH O'QILMASIN (2026-10-10, foydalanuvchi: "botda xatolik chiqdi"). Fayl open(..., "w") bilan yozilardi:
+# u AVVAL bo'shatiladi, keyin 1,3 MB yoziladi. Shu oraliqda boshqa oqim (hovuz holatni yangilaydi, handler
+# buyurtma yozadi) faylni BO'SH o'qib, json "Expecting value: line 1 column 1" bergan - 15:59:22 da foydalanuvchiga
+# "xatolik" chiqqan. Yana yomoni: yozish o'rtasida jarayon o'chsa (batareya tugashi) fayl kesilgan holda qolardi.
+# Endi: vaqtinchalik faylga yoziladi va BIR ZUMDA almashtiriladi (os.replace); o'qish va yozish bitta qulf ostida.
+_TMP = ADMINS_FILE.with_name(ADMINS_FILE.name + ".tmp")
+_io_lock = threading.RLock()
+
+
+def _write_file(data: dict) -> None:
+    with _io_lock:
+        with open(_TMP, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        for attempt in range(6):
+            try:
+                os.replace(_TMP, ADMINS_FILE)
+                return
+            except PermissionError:           # Windows: faylni shu payt boshqa jarayon ochib turibdi
+                if attempt == 5:
+                    raise
+                _time.sleep(0.2)
+
+
+def _read_file() -> dict:
+    with _io_lock:
+        with open(ADMINS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+
 
 def pull_remote() -> None:
     """Ishga tushganda: saqlangan ro'yxatni Cloudflare'dan olib, faylga yozadi."""
@@ -35,8 +64,7 @@ def pull_remote() -> None:
     if _DIRTY.exists() and ADMINS_FILE.exists():
         logging.getLogger(__name__).warning("Mahalliy holat darvozadagidan yangiroq - o'qilmaydi, yozishga urinamiz")
         try:
-            with open(ADMINS_FILE, "r", encoding="utf-8") as f:
-                _remote("PUT", f.read().encode("utf-8"))
+            _remote("PUT", json.dumps(_read_file()).encode("utf-8"))
             _DIRTY.unlink(missing_ok=True)
         except Exception as exc:
             logging.getLogger(__name__).warning("Holat darvozaga hali yozilmadi: %s", exc)
@@ -44,8 +72,7 @@ def pull_remote() -> None:
     try:
         data = _remote("GET")
         if data and "admins" in data:
-            with open(ADMINS_FILE, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
+            _write_file(data)
     except Exception as exc:
         logging.getLogger(__name__).warning("Adminlar ro'yxati olinmadi: %s", exc)
 
@@ -81,8 +108,7 @@ def _load() -> dict:
         try:
             data = peek_remote()
             if data is not None:
-                with open(ADMINS_FILE, "w", encoding="utf-8") as f:
-                    json.dump(data, f, indent=2)
+                _write_file(data)
                 _shared["fresh"] = _time.time()
                 return data
         except Exception as exc:
@@ -91,13 +117,11 @@ def _load() -> dict:
         data = {"admins": [OWNER_ID]}
         _save(data)
         return data
-    with open(ADMINS_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+    return _read_file()
 
 
 def _save(data: dict) -> None:
-    with open(ADMINS_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+    _write_file(data)
     if ADMINS_URL and not READONLY["on"]:
         try:
             _remote("PUT", json.dumps(data).encode("utf-8"))

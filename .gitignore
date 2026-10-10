@@ -15,3 +15,4 @@ restart.flag
 admins.json.dirty
 restart.flag
 local.env
+admins.json.tmp
