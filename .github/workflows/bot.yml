@@ -95,8 +95,6 @@ jobs:
           BOT_SLOT: "1"
           # Uxlamaydi: faqat 5 soatlik chegarada almashadi (darvoza ALWAYS_ON)
           IDLE_EXIT: "999999"
-          # GitHub - doimiy bosh (2026-10-10): darvoza 3 s da bir so'raladi (Cloudflare kunlik so'rov limiti)
-          POLL_EVERY: "3"
         run: |
           if ! .venv/bin/python -V; then
             echo "Kesh buzilgan - qayta o'rnatiladi"
