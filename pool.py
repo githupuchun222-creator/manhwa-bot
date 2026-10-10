@@ -45,7 +45,9 @@ WORK = os.getenv("POOL_WORK", "1") != "0"
 BIG_WAIT = int(os.getenv("POOL_BIG_WAIT", "180" if ROLE == "primary" else "0"))
 PREFER_BIG = os.getenv("POOL_PREFER_BIG", "1" if ROLE == "backup" else "0") == "1"
 
-state = {"ok": False, "receiver": False, "draining": False, "open": 0, "checked": 0.0}
+state = {"ok": False, "receiver": False, "draining": False, "open": 0, "checked": 0.0, "tick": 0.0}
+STEP_TIMEOUT = 300            # bitta qadam (bob olish + 20 tagacha natijani yozish) shundan uzoq cho'zilmaydi
+_started = {"on": False}
 _running: dict[str, asyncio.Task] = {}
 _unsent: list[dict] = []             # yetkazib bo'lmagan "tugadi" xabarlari - keyingi aylanishda
 _kick = asyncio.Event()
@@ -162,48 +164,71 @@ async def cancel(order: str) -> list[str]:
 async def run(bot, slots: int, execute, apply) -> None:
     """Ishchi sikli. execute(bot, job) -> natija dict; apply(bot, results) - qabul qiluvchida hisob-kitob."""
     slots = SLOTS or slots
-    asyncio.create_task(_beats())
-    threading.Thread(target=_watch_lag, args=(asyncio.get_running_loop(),), daemon=True).start()
-    while True:
+    if not _started["on"]:                 # sikl qayta yoqilsa (runner qo'riqchisi) bular ikkilanmasin
+        _started["on"] = True
+        asyncio.create_task(_beats())
+        threading.Thread(target=_watch_lag, args=(asyncio.get_running_loop(),), daemon=True).start()
+    # SIKL TO'XTAB QOLMASIN (2026-10-09/10): noutbukda shu sikl 19:28 da JIMGINA to'xtagan (logda xato yo'q -
+    # vazifa o'zgaruvchida saqlangani uchun asyncio uning xatosini hech qachon chiqarmaydi). 15 soat davomida
+    # noutbuk hovuzdan bob olmagan va GitHub tugatgan 100+ bobni "Yetkazildi" deb yozmagan. Endi har qadam
+    # alohida: xato bo'lsa logga yoziladi va sikl davom etadi; STEP_TIMEOUT da tugamasa (tarmoq qotgan) uziladi.
+    while WANTED:
+        state["tick"] = time.time()
         try:
             await asyncio.wait_for(_kick.wait(), POLL_EVERY)
         except asyncio.TimeoutError:
             pass
         _kick.clear()
-        if not WANTED:
-            return
-        if not state["ok"]:
-            if time.time() - state["checked"] > 120:
-                await probe()
-            continue
-        await _flush()
-        cap = 1 if on_battery() else slots
-        free = 0 if (state["draining"] or not WORK) else max(0, min(slots, cap) - len(_running))
-        receiver = state["receiver"]
-        if not free and not receiver:
-            continue
         try:
-            got = await _post("claim", n=free, res="1" if receiver else "0", max=MAX_BYTES or "",
-                              bigwait=BIG_WAIT, prefer_big="1" if PREFER_BIG else "0")
-        except Exception as exc:
-            log.warning("Hovuzdan ish olinmadi: %s", _short(exc))
-            # faqat HAQIQIY 404 (xato matnidagi manzilda ishchi nomi bor: "backup-1404-..." ham "404" edi)
-            if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 404:
-                state["ok"] = False            # darvoza eski versiyaga qaytarilgan
-            continue
-        state["open"] = got.get("open", 0)
-        if got.get("jobs") and not receiver:
+            await asyncio.wait_for(_step(bot, slots, execute, apply), STEP_TIMEOUT)
+        except asyncio.TimeoutError:
+            log.error("Hovuz qadami %d s da tugamadi (tarmoq qotgan?) - uzildi, sikl davom etadi", STEP_TIMEOUT)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("Hovuz siklida kutilmagan xato - sikl davom etadi")
+            await asyncio.sleep(2)
+
+
+async def _step(bot, slots: int, execute, apply) -> None:
+    """Siklning bitta qadami: natijalarni jo'natish, bo'sh o'ringa bob olish, tayyor natijalarni yozish."""
+    if not state["ok"]:
+        if time.time() - state["checked"] > 120:
+            await probe()
+        return
+    await _flush()
+    cap = 1 if on_battery() else slots
+    free = 0 if (state["draining"] or not WORK) else max(0, min(slots, cap) - len(_running))
+    receiver = state["receiver"]
+    if not free and not receiver:
+        return
+    try:
+        got = await _post("claim", n=free, res="1" if receiver else "0", max=MAX_BYTES or "",
+                          bigwait=BIG_WAIT, prefer_big="1" if PREFER_BIG else "0")
+    except Exception as exc:
+        log.warning("Hovuzdan ish olinmadi: %s", _short(exc))
+        # faqat HAQIQIY 404 (xato matnidagi manzilda ishchi nomi bor: "backup-1404-..." ham "404" edi)
+        if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 404:
+            state["ok"] = False            # darvoza eski versiyaga qaytarilgan
+        return
+    state["open"] = got.get("open", 0)
+    # avval boblar ishga tushadi: pastdagi qadamlar (holatni yangilash, natijalarni yozish) xato bersa ham
+    # olingan bob egasiz qolmasin
+    for job in got.get("jobs", []):
+        log.info("Hovuzdan bob olindi: %s (%d-urinish)", job["ref"], job.get("tries", 1))
+        _running[job["ref"]] = asyncio.create_task(_exec(bot, job, execute))
+    if got.get("jobs") and not receiver:
+        try:
             await _refresh_state()
-        for job in got.get("jobs", []):
-            log.info("Hovuzdan bob olindi: %s (%d-urinish)", job["ref"], job.get("tries", 1))
-            _running[job["ref"]] = asyncio.create_task(_exec(bot, job, execute))
-        if receiver and got.get("results"):
-            try:
-                await apply(bot, got["results"])
-                await _post("ack", json=[r["ref"] for r in got["results"]])
-                kick()                          # yana natija bo'lishi mumkin
-            except Exception as exc:
-                log.warning("Natijalar yozilmadi: %s", _short(exc))
+        except Exception as exc:
+            log.warning("Umumiy holat yangilanmadi: %s", _short(exc))
+    if receiver and got.get("results"):
+        try:
+            await apply(bot, got["results"])
+            await _post("ack", json=[r["ref"] for r in got["results"]])
+            kick()                          # yana natija bo'lishi mumkin
+        except Exception as exc:
+            log.warning("Natijalar yozilmadi: %s", _short(exc))
 
 
 async def _refresh_state() -> None:

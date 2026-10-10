@@ -364,6 +364,12 @@ async def main() -> None:
             admins.READONLY["on"] = pool.ready() and not receiver
             pool.state["receiver"] = receiver
             pool.state["draining"] = old
+            # Hovuz sikli tugab qolgan bo'lsa (kutilmagan xato) - sababini logga yozib, qayta yoqamiz
+            if pool.WANTED and pool_task.done():
+                exc = None if pool_task.cancelled() else pool_task.exception()
+                log.error("Hovuz sikli to'xtagan edi (%r) - qayta yoqildi", exc)
+                pool_task = asyncio.create_task(pool.run(app.bot, bot.PARALLEL_JOBS, bot.shop.run_pool_chapter,
+                                                         bot.shop.apply_pool_results))
             local_busy = bool(items) or got_direct or bool(bot._waiting) or bool(bot._current["job"])
             busy = local_busy or pool.busy()
             if busy:
