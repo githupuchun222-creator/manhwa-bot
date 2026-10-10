@@ -44,6 +44,20 @@ WORK = os.getenv("POOL_WORK", "1") != "0"
 # noutbuk uni BIG_WAIT soniya hech kim olmasa oladi (GitHub band/o'chiq bo'lsa ham bob kutib qolmaydi).
 BIG_WAIT = int(os.getenv("POOL_BIG_WAIT", "180" if ROLE == "primary" else "0"))
 PREFER_BIG = os.getenv("POOL_PREFER_BIG", "1" if ROLE == "backup" else "0") == "1"
+# SEKIN YORDAMCHI FAQAT ORTIQCHASINI OLADI (2026-10-10, foydalanuvchi: "endi tezlikga ta'sir qildi"). GitHub bobni
+# 3-5 daqiqada tugatadi; BATAREYADAGI noutbuk (telefon hotspoti orqali) xuddi shunday bobga 6-14 daqiqa sarflagan
+# (M-1314#4 - 843 s), muzlab 4 ta bobni tashlab yuborgan, M-1344#2 ni esa 18 daqiqadan keyin yubora olmagan.
+# Navbat qisqa bo'lsa bunday yordamchi bobni GitHub'dan TORTIB OLIB, sekinlashtiradi. Shuning uchun sekin qurilma
+# (telefon; batareyadagi noutbuk) faqat SLOW_WAIT soniyadan beri hech kim olmagan bobni oladi - ya'ni GitHub
+# ulgurmayotgan yoki o'chiq bo'lganda. Quvvatga ulangan noutbuk - avvalgidek darhol oladi.
+SLOW_WAIT = int(os.getenv("POOL_SLOW_WAIT", "300"))
+SLOW = os.getenv("POOL_SLOW", "")              # "1" - doim sekin, "0" - hech qachon, bo'sh - o'zi aniqlaydi
+RELEASE_HOLD = 600                              # bobni tarmoq sabab qaytargan qurilma shuncha soniya yangi bob olmaydi
+_hold = {"until": 0.0}
+
+
+class Release(Exception):
+    """Bob shu qurilmada tugamadi (tarmoq uzildi) - xato deb yozilmaydi, navbatga qaytadi (boshqa runner oladi)."""
 
 state = {"ok": False, "receiver": False, "draining": False, "open": 0, "checked": 0.0, "tick": 0.0}
 STEP_TIMEOUT = 300            # bitta qadam (bob olish + 20 tagacha natijani yozish) shundan uzoq cho'zilmaydi
@@ -97,6 +111,12 @@ def _drop_all() -> None:
     for ref, task in list(_running.items()):
         _running.pop(ref, None)
         task.cancel()
+
+
+def slow() -> bool:
+    if SLOW in ("0", "1"):
+        return SLOW == "1"
+    return ROLE == "phone" or (ROLE != "backup" and on_battery())
 
 
 def ready() -> bool:
@@ -215,6 +235,9 @@ async def _step(bot, slots: int, execute, apply) -> None:
     receiver = state["receiver"]
     if not free and not receiver:
         return
+    if free and not receiver:
+        if time.time() < _hold["until"] or (SLOW_WAIT and slow() and not await _overflow()):
+            return
     try:
         got = await _post("claim", n=free, res="1" if receiver else "0", max=MAX_BYTES or "",
                           bigwait=BIG_WAIT, prefer_big="1" if PREFER_BIG else "0")
@@ -244,6 +267,25 @@ async def _step(bot, slots: int, execute, apply) -> None:
             log.warning("Natijalar yozilmadi: %s", _short(exc))
 
 
+async def _overflow() -> bool:
+    """Navbatda SLOW_WAIT soniyadan beri kutayotgan (bizga sig'adigan) bob bormi - sekin qurilma shundagina oladi."""
+    try:
+        async with httpx.AsyncClient(timeout=25) as c:
+            r = await c.get(f"{GATE_URL}/jobs/list", params={"w": WORKER}, headers={"x-key": GATE_KEY})
+            r.raise_for_status()
+            rows = r.json()
+    except Exception as exc:
+        log.warning("Navbat holati olinmadi: %s", _short(exc))
+        return False
+    now = time.time() * 1000
+    for j in rows:
+        idle = j.get("state") == "queued" or (j.get("state") == "work" and (j.get("lease_s") or 0) < 0)
+        if (idle and (not MAX_BYTES or (j.get("size") or 0) <= MAX_BYTES)
+                and now - (j.get("created") or now) >= SLOW_WAIT * 1000):
+            return True
+    return False
+
+
 async def _refresh_state() -> None:
     """Yordamchi runner: lug'at va uslub uchun umumiy holatni yangilab oladi (yozmaydi)."""
     if time.time() - _pulled["t"] > 120:
@@ -259,6 +301,14 @@ async def _exec(bot, job: dict, execute) -> None:
         log.warning("%s: bob boshqa runnerga o'tgan - bu nusxa to'xtatildi", ref)
         _running.pop(ref, None)
         raise
+    except Release as exc:
+        # "tugadi" jo'natilmaydi va "tirikman" to'xtaydi - muddat (150 s) o'tgach bobni boshqa runner oladi.
+        # Bu qurilmaning tarmog'i yomon ekan - o'sha bobni o'zi qayta tortib olmasligi uchun biroz dam oladi.
+        _running.pop(ref, None)
+        _hold["until"] = time.time() + RELEASE_HOLD
+        log.warning("%s: tarmoq uzildi (%s) - bob navbatga qaytadi, %d daqiqa yangi bob olinmaydi",
+                    ref, exc, RELEASE_HOLD // 60)
+        return
     except Exception as exc:
         log.exception("%s: bob bajarilmadi", ref)
         result = {"ok": False, "why": _short(exc)}

@@ -22,8 +22,10 @@ import time
 
 from telegram import (InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton,
                       ReplyKeyboardMarkup, Update)
-from telegram.error import TelegramError
+from telegram.error import BadRequest, NetworkError, TelegramError
 from telegram.ext import ContextTypes
+
+import httpx
 
 import admins
 import broadcast
@@ -1087,6 +1089,14 @@ async def run_pool_chapter(bot, job: dict) -> dict:
     except asyncio.CancelledError:
         raise
     except Exception as exc:
+        # TARMOQ UZILDI (2026-10-10): noutbuk telefon hotspotida 21 sahifali tayyor bobni (M-1344#2) 5 daqiqada
+        # yubora olmadi - foydalanuvchi 18 daqiqa kutib "tarjima qilinmadi" degan xabar oldi, bob esa boshqa
+        # qurilmaga O'TMADI. Endi faylni yuklab olish/yuborishdagi tarmoq xatosi bobni yiqitmaydi: u navbatga
+        # qaytadi va boshqa runner (GitHub) bajaradi (darvoza 3 urinishdan keyin baribir to'xtatadi).
+        if not wjob["delivered"] and _net_error(exc):
+            logger.warning("%s: tarmoq xatosi (%s) - bob boshqa runnerga qoldiriladi", job["ref"], pool._short(exc))
+            await B._edit_status(status, f"\U0001f9fe {d['order']}{part}: navbatda \u23f3")
+            raise pool.Release(pool._short(exc) or type(exc).__name__) from exc
         logger.exception("%s: bob bajarilmadi", job["ref"])
         if not wjob["delivered"]:
             await B._edit_status(status, "\u26a0\ufe0f Kutilmagan xatolik - bu bob tarjima qilinmadi." + B._fail_note())
@@ -1095,6 +1105,13 @@ async def run_pool_chapter(bot, job: dict) -> dict:
         B._job_var.reset(t1)
         admins.GLOSS_SINK.reset(t2)
     return {"ok": wjob["delivered"], "res": wjob.get("res"), "names": sink}
+
+
+def _net_error(exc: Exception) -> bool:
+    """Xato tarmoqdanmi (vaqt tugadi, aloqa uzildi) - Telegram so'rovni RAD etgani (BadRequest) emas."""
+    if isinstance(exc, BadRequest):
+        return False
+    return isinstance(exc, (NetworkError, httpx.TransportError, ConnectionError, TimeoutError))
 
 
 def _refund_flags(uid: int, flags: dict, k: int = 1) -> None:
