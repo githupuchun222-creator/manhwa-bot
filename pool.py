@@ -150,6 +150,19 @@ async def add(jobs: list[dict]) -> bool:
     return True
 
 
+async def add_report(jobs: list[dict]) -> list[int] | None:
+    """add() kabi, lekin har bob haqiqatan qo'shildimi (1) yoki hovuzda bor edimi (0) - shuni qaytaradi."""
+    if not ready():
+        return None
+    try:
+        got = await _post("add", json=jobs)
+    except Exception as exc:
+        log.warning("Hovuzga qo'yib bo'lmadi: %s", _short(exc))
+        return None
+    kick()
+    return [int(x) for x in got.get("added", [])]
+
+
 async def cancel(order: str) -> list[str]:
     """Buyurtmaning hali boshlanmagan boblarini olib tashlaydi (ref ro'yxati)."""
     if not ready():

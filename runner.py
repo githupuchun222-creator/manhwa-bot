@@ -79,6 +79,7 @@ POLL_EVERY = 1.5
 # darhol yangi kod bilan qaytadan yoqadi. Foydalanuvchining bobi uzilib qolmaydi.
 RESTART_FLAG = Path(__file__).with_name("restart.flag")
 POOL_GRACE = 300              # hovuz shuncha soniya javob bermasa - GitHub eski tartibda (retire) ketadi
+LOST_EVERY = 900              # qabul qiluvchi shuncha soniyada hovuzdan tushib qolgan boblarni qayta qo'yadi
 # UCH DARAJA (2026-10-02): noutbuk RUNNER_ROLE=primary, telefon RUNNER_ROLE=phone, GitHub - backup.
 # Yuqori daraja tirik ekan darvoza pastdagiga ish bermaydi (x-retire): GitHub nusxasi o'chadi,
 # telefon esa KUTISH holatiga o'tadi (o'chmaydi) va noutbuk jim bo'lishi bilan o'zi davom etadi.
@@ -184,6 +185,7 @@ async def main() -> None:
     last_beat = 0.0                    # GitHub: "hali ishlayapman" belgisi qachon yozilgan
     relayed = False                    # GitHub: 5 soatlik chegarada o'rniga yangisi chaqirildimi
     pool_off = None                    # GitHub: hovuz qachondan beri javob bermayapti
+    last_lost = time.time() - LOST_EVERY + 300   # yo'qolgan boblar: ishga tushgach 5 daqiqadan keyin, so'ng davriy
 
     async def tell_owner(text: str) -> None:
         try:
@@ -364,6 +366,15 @@ async def main() -> None:
             admins.READONLY["on"] = pool.ready() and not receiver
             pool.state["receiver"] = receiver
             pool.state["draining"] = old
+            if (receiver and not old and bot.shop.ENABLED and pool.ready()
+                    and time.time() - last_lost > LOST_EVERY):
+                last_lost = time.time()
+                try:
+                    n = await bot.shop.requeue_lost(app.bot)
+                    if n:
+                        await tell_owner(f"🔄 Hovuzdan tushib qolgan {n} ta bob qayta navbatga qo‘yildi.")
+                except Exception as exc:
+                    log.warning("Yo'qolgan boblar tekshirilmadi: %s", pool._short(exc))
             # Hovuz sikli tugab qolgan bo'lsa (kutilmagan xato) - sababini logga yozib, qayta yoqamiz
             if pool.WANTED and pool_task.done():
                 exc = None if pool_task.cancelled() else pool_task.exception()

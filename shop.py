@@ -1002,6 +1002,10 @@ class _StatusRef:
         self._bot, self.chat_id, self.message_id = bot, chat_id, message_id
 
     async def edit_text(self, text: str, **kw):
+        if not self.message_id:        # holat xabari yo'q (qayta navbatga qo'yilgan bob) - birinchi safar yaratiladi
+            msg = await self._bot.send_message(self.chat_id, text, **kw)
+            self.message_id = msg.message_id
+            return msg
         return await self._bot.edit_message_text(text, chat_id=self.chat_id, message_id=self.message_id, **kw)
 
 
@@ -1157,6 +1161,62 @@ async def apply_pool_results(bot, results: list[dict]) -> None:
                 pass
         logger.info("Hovuz natijasi: %s#%s %s (%s)", d["order"], d["i"], "yetkazildi" if ok else "bajarilmadi",
                     res.get("w", "?"))
+
+
+# YO'QOLGAN BOBLAR (2026-10-10). Buyurtma "Qabul qilindi" (hovuzga qo'yilgan) bo'lib turibdi, hovuzda esa
+# uning bobi YO'Q: M-0942, M-0977 (1 bob), M-0974 (10 dan 2 tasi), M-0987 (4 dan 2 tasi) 20+ soat shunday
+# qolgan - foydalanuvchi: "ba'zi odamlarga bobni tarjimasi yetib bormagan". Qabul qiluvchi runner vaqti-vaqti
+# bilan tugallanmagan boblarni hovuzga QAYTA qo'shadi: darvoza mavjud bobni ikkinchi marta qo'shmaydi
+# (INSERT OR IGNORE, javobda 0), shuning uchun navbatdagi/ishlanayotgan/natijasi kutilayotgan bobga zarar yo'q.
+# Hisobdan qayta yechilmaydi (asl pflags - bob bajarilmasa qaytarish uchun).
+LOST_AGE = int(os.getenv("LOST_AGE", "1800"))                  # bundan yosh buyurtma hali tekshirilmaydi
+LOST_MAX_AGE = int(os.getenv("LOST_MAX_AGE", str(48 * 3600)))  # bundan eskisi tiriltirilmaydi
+LOST_BATCH = 20                                                # bitta so'rovda (darvozaning ichki so'rov chegarasi)
+
+
+async def requeue_lost(bot) -> int:
+    """Hovuzdan tushib qolgan boblarni qayta navbatga qo'yadi. Nechta bob qo'shilganini qaytaradi."""
+    if not pool.ready():
+        return 0
+    now = time.time()
+    jobs: list[dict] = []
+    for o in list(_data().get("orders", {}).values()):
+        if not (o.get("pooled") and o.get("status") in (ST_QUEUED, ST_WORK) and o.get("files")):
+            continue
+        if not LOST_AGE < now - o.get("created", 0) < LOST_MAX_AGE:
+            continue
+        groups = _chapters(o["files"])
+        n = int(o.get("parts") or 0)
+        if not n or len(groups) != n:
+            continue
+        done = set(o.get("parts_done") or [])
+        ref, uid = o["ref"], o["uid"]
+        jobs += [{"ref": f"{ref}#{i}", "uid": uid, "size": sum(int(f.get("size") or 0) for f in g),
+                  "data": {"order": ref, "i": i, "n": n, "uid": uid, "chat": uid, "mid": 0,
+                           "files": g, "name": _chapter_name(o, g, i, n), "flags": o.get("pflags") or {}}}
+                 for i, g in enumerate(groups, 1) if i not in done]
+    back: dict[tuple[int, str], int] = {}                      # (foydalanuvchi, buyurtma) -> nechta bob qaytdi
+    for k in range(0, len(jobs), LOST_BATCH):
+        part = jobs[k:k + LOST_BATCH]
+        added = await pool.add_report(part)
+        if added is None:
+            break                                              # darvoza javob bermadi - keyingi safar
+        for j, a in zip(part, added):
+            if a:
+                key = (j["uid"], j["data"]["order"])
+                back[key] = back.get(key, 0) + 1
+    for (uid, ref), k in back.items():
+        logger.warning("%s: %d ta bob hovuzda yo'q edi - qayta navbatga qo'yildi", ref, k)
+        try:
+            await bot.send_message(
+                uid, f"\U0001f504 {ref}: {k} ta bob navbatdan tushib qolgan edi - qayta navbatga qo\u2018yildi. "
+                     "Tayyor bo\u2018lgach fayl keladi, hisobingizdan qayta yechilmaydi.")
+        except TelegramError:
+            pass
+    total = sum(back.values())
+    if total:
+        _log(0, f"yo'qolgan boblar: {total} tasi qayta navbatga qo'yildi")
+    return total
 
 
 def unfinished(now: float | None = None) -> list[dict]:
