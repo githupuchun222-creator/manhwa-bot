@@ -269,15 +269,26 @@ async def _exec(bot, job: dict, execute) -> None:
     kick()
 
 
+# BIR VAQTDA IKKI CHAQIRUV (2026-10-10 - siklning jimgina o'lishi shu yerdan chiqqan). _flush ni ham sikl,
+# ham har tugagan bob (_exec) chaqiradi. Qulfsiz ikkalasi BITTA natijani jo'natib, so'ng har biri "birinchi
+# element"ni o'chirardi: (a) ro'yxat bo'shab qolsa pop IndexError berib, hovuz siklini o'ldirardi - GitHub
+# yordamchisi 05:42:46 va 05:42:51 da ikki bobni ketma-ket yuborib, shundan keyin navbatdagi 29 bobdan birortasini
+# ham olmagan (noutbukda 09-okt 19:28:20 da xuddi shunday); (b) boshqa bobning hali jo'natilmagan natijasi
+# o'chib ketardi - o'sha bob "tugadi" deb belgilanmay, keyin qaytadan tarjima qilinardi.
+_flush_lock = asyncio.Lock()
+
+
 async def _flush() -> None:
-    while _unsent:
-        item = _unsent[0]
-        try:
-            await _post("done", json=item)
-        except Exception as exc:
-            log.warning("%s: natija darvozaga yetmadi (%s) - qayta uriniladi", item["ref"], _short(exc))
-            return
-        _unsent.pop(0)
+    async with _flush_lock:
+        while _unsent:
+            item = _unsent[0]
+            try:
+                await _post("done", json=item)
+            except Exception as exc:
+                log.warning("%s: natija darvozaga yetmadi (%s) - qayta uriniladi", item["ref"], _short(exc))
+                return
+            if _unsent and _unsent[0] is item:
+                _unsent.pop(0)
 
 
 async def _beats() -> None:
