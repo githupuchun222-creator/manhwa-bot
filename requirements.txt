@@ -6,7 +6,8 @@ numpy>=1.26.0
 # PDF sahifalarini rasmga aylantirish (tashqi dastur talab qilmaydi)
 pypdfium2>=5.0
 # Tezkor OCR (sahifa ~1-2 sek). opencv ham shu bilan keladi - inpaint va flood fill uchun
-rapidocr>=3.9
+# 3.10.0 da modellar kechiktirib yuklanadi (text_det = None) -> fast_ocr yiqilib, bob TARJIMASIZ qaytardi (2026-10-10)
+rapidocr==3.9.2
 onnxruntime>=1.24
 wordninja>=2.0
 
