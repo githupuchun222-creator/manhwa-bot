@@ -30,7 +30,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 logger = logging.getLogger(__name__)
 
@@ -496,6 +496,11 @@ GEMINI_MODELS = [m for m in os.getenv(
     "gemini-3.5-flash:low,gemini-3.8-flash:low,gemini-3.7-flash:low,gemini-3.6-flash:low,"
     "gemini-3-flash-preview:low,gemini-3.5-flash-lite:minimal,gemini-3.1-flash-lite:minimal,"
     "gemini-3.1-flash-lite-preview:minimal,gemma-4-31b-it").split(",") if m]
+# GEMMA O'CHIQ (2026-10-11): jonli o'lchovda gemma-4-31b 20 qisqa qatorga ham ~30 s javob beradi (yoki 500),
+# GEMINI_TIMEOUT esa 25 s - bir kunda 294 marta vaqt tugashi + 103 ta 500, bitta ham muvaffaqiyat yo'q:
+# har urinish 25 s behuda kutish edi. GEMINI_GEMMA=1 bilan qaytariladi.
+if os.getenv("GEMINI_GEMMA", "") != "1":
+    GEMINI_MODELS = [m for m in GEMINI_MODELS if not m.startswith("gemma")]
 GEMINI_TIMEOUT = 25
 _cooldown: dict[tuple[int, str], float] = {}   # (kalit, model) -> shu vaqtgacha ishlatilmaydi
 
@@ -785,6 +790,12 @@ def _same_names(line: str) -> str:
 # xuddi shu modellar, xuddi shu ko'rsatma - faqat qaysi birining javobi OLDIN kelishi biroz
 # o'zgarishi mumkin (odatda ustuvor model baribir eng tez javob beradi, chunki u sog'lom).
 GEMINI_RACE = max(1, int(os.getenv("GEMINI_RACE", "4")))
+# NAVBAT BILAN (2026-10-11): 4 tasi BIRDAN so'ralganda har bo'lak 4 ta so'rov yeydi (g'olib bitta,
+# qolgan 3 tasi ham kunlik limitdan ketadi) - limit ~3 barobar tez tugab, 03:00-12:00 oralig'ida boblar
+# AI'siz (Google) chiqdi. Endi avval BITTA model so'raladi; u xato bersa darhol keyingisi, GEMINI_HEDGE
+# soniyada javob bermasa - yoniga keyingisi qo'shiladi (osilib qolgan model kutilmaydi), birga ko'pi
+# bilan GEMINI_RACE ta. Sog'lom paytda bo'lak = 1 so'rov, tezlik o'zgarmaydi (lite ~2-5 s javob beradi).
+GEMINI_HEDGE = float(os.getenv("GEMINI_HEDGE", "10"))
 
 
 def _call_gemini_once(k: int, key: str, spec: str, system: str, user: str, n_expected: int) -> list | None:
@@ -849,8 +860,8 @@ def _gemini(english: list[str], drafts: list[str]) -> list[str] | None:
         return None
     system = _system_prompt()
     # Tartib (foydalanuvchi: "birinchisining limiti tugasa ikkinchisiga o'tsin"): avval 1-kalitning
-    # hamma modellari, u tugagach (hammasi dam olishda) - 2-kalit; GEMINI_RACE tadan to'plam
-    # bo'lib PARALLEL so'raladi (eng ustuvor sog'lom model odatda birinchi to'plamda yutadi).
+    # hamma modellari, u tugagach (hammasi dam olishda) - 2-kalit; navbat bilan so'raladi,
+    # sekin javob bersa yoniga keyingisi qo'shiladi (GEMINI_HEDGE, ko'pi bilan GEMINI_RACE ta birga).
     candidates = [(k, key, spec) for k, key in enumerate(GEMINI_KEYS) for spec in GEMINI_MODELS]
     for attempt in range(2):
         pending = [c for c in candidates
@@ -859,17 +870,34 @@ def _gemini(english: list[str], drafts: list[str]) -> list[str] | None:
             break                              # hammasi dam olishda - qayta urinish foydasiz
         pool = ThreadPoolExecutor(max_workers=GEMINI_RACE)
         try:
-            for i in range(0, len(pending), GEMINI_RACE):
-                batch = pending[i:i + GEMINI_RACE]
-                futures = {pool.submit(_call_gemini_once, k, key, spec, system, user, len(english)): spec
-                           for k, key, spec in batch}
-                for fut in as_completed(futures):
+            queue = iter(pending)
+            running: set = set()
+            more = True
+
+            def launch() -> None:
+                nonlocal more
+                c = next(queue, None)
+                if c is None:
+                    more = False
+                    return
+                running.add(pool.submit(_call_gemini_once, c[0], c[1], c[2], system, user, len(english)))
+
+            launch()
+            while running:
+                can_add = more and len(running) < GEMINI_RACE
+                done, running = wait(running, timeout=GEMINI_HEDGE if can_add else None,
+                                     return_when=FIRST_COMPLETED)
+                for fut in done:
                     out = fut.result()
                     if out is not None:
                         _S().last = time.time()
                         _S().ctx.extend(english)
                         del _S().ctx[:-8]
                         return [_same_names(" ".join(str(s or "").split())) for s in out]
+                # xato bergan har biri o'rniga keyingisi; hech biri tugamagan bo'lsa (sekin) - yoniga bitta
+                for _ in range(max(1, len(done))):
+                    if more and len(running) < GEMINI_RACE:
+                        launch()
         finally:
             pool.shutdown(wait=False)          # g'olib topildi - qolganlarini kutib o'tirmaymiz
         time.sleep(2 + 3 * attempt)

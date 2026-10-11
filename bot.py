@@ -1423,6 +1423,7 @@ CHAPTER_BATCH = os.getenv("CHAPTER_BATCH", "") == "1"
 # o'zi ham ichida bir nechta oqim ishlatadi (FAST_WORKERS, translator.py) - juda ko'p bo'lmasin deb
 # standart past (2); noutbukda yadro ko'p bo'lsa ko'paytirish mumkin.
 PAGE_OCR_WORKERS = max(1, int(os.getenv("PAGE_OCR_WORKERS", "2")))
+DRAW_PAGES = max(0, int(os.getenv("DRAW_PAGES", "0")))       # 0 - o'zi hisoblaydi (8 // PARALLEL_JOBS)
 
 
 async def _chapter_batch(pages, limit: int, budget: dict, status_msg, t0: float,
@@ -1464,7 +1465,9 @@ async def _chapter_batch(pages, limit: int, budget: dict, status_msg, t0: float,
     await _edit_status(status_msg, "Sahifalarga yozilmoqda...")
     # Chizish ham xotira ham CPU talab qiladi: parallel ish ko'p bo'lsa, har ishda kamroq
     # sahifa bir vaqtda chiziladi (jami ~8 ta sahifa - xotira to'lib ketmasin).
-    sem = asyncio.Semaphore(max(1, 8 // max(1, PARALLEL_JOBS)))
+    # DRAW_PAGES (2026-10-11, telefon): PARALLEL_JOBS=1 da bu yerda 8 sahifa BIRGA chizilardi - telefonda
+    # runner 4,1 GB ga yetib, Android Termux'ni kuniga 12 marta o'ldirgan (LOW_MEMORY), bob yarim yo'lda qolardi.
+    sem = asyncio.Semaphore(DRAW_PAGES or max(1, 8 // max(1, PARALLEL_JOBS)))
 
     async def draw(jpeg: bytes, items: list[dict]) -> bytes:
         if not items:
