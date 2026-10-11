@@ -98,7 +98,7 @@ def on_battery() -> bool:
 # XOTIRA HIMOYASI (2026-10-11, telefon): runner xotirasi boblar orasida to'planib boradi (10 daqiqada 4,7 GB),
 # Android Termux'ni LOW_MEMORY bilan o'ldiradi (bir kunda 12 marta) - qo'ldagi bob yarim yo'lda qoladi.
 # MAX_RSS_MB dan oshsa restart.flag qo'yiladi: runner qo'ldagi bobni TUGATIB chiqadi, run4.sh toza qayta yoqadi.
-MAX_RSS_MB = int(os.getenv("MAX_RSS_MB", "0"))
+MAX_RSS_MB = int(os.getenv("MAX_RSS_MB", "2500" if ROLE == "phone" else "0"))    # telefonda standart yoqiq
 _RESTART_FLAG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "restart.flag")
 
 
