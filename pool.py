@@ -44,6 +44,19 @@ WORK = os.getenv("POOL_WORK", "1") != "0"
 # noutbuk uni BIG_WAIT soniya hech kim olmasa oladi (GitHub band/o'chiq bo'lsa ham bob kutib qolmaydi).
 BIG_WAIT = int(os.getenv("POOL_BIG_WAIT", "180" if ROLE == "primary" else "0"))
 PREFER_BIG = os.getenv("POOL_PREFER_BIG", "1" if ROLE == "backup" else "0") == "1"
+# KATTA BOBLAR CHEGARASI (2026-10-11): rasm tozalash (LaMa) jarayonda BITTA oqimda ketadi (lama._lock) - 4 o'rinli
+# noutbuk 4 ta 40-50 MB bobni birga olib, 30+ daqiqa ushlab turgan (GitHub bo'sh turgan). Endi bir vaqtda ko'pi
+# bilan POOL_BIG_SLOTS ta katta (>20 MB) bob; qolgan o'rinlarga faqat kichiklari olinadi. 0 - cheklovsiz.
+BIG_BYTES = 20 * 2**20
+BIG_SLOTS = int(os.getenv("POOL_BIG_SLOTS", "2"))
+_big: set[str] = set()
+
+
+def _job_size(job: dict) -> int:
+    try:
+        return sum(int(f.get("size") or 0) for f in (job.get("data") or {}).get("files") or [])
+    except Exception:
+        return 0
 # SEKIN YORDAMCHI FAQAT ORTIQCHASINI OLADI (2026-10-10, foydalanuvchi: "endi tezlikga ta'sir qildi"). GitHub bobni
 # 3-5 daqiqada tugatadi; BATAREYADAGI noutbuk (telefon hotspoti orqali) xuddi shunday bobga 6-14 daqiqa sarflagan
 # (M-1314#4 - 843 s), muzlab 4 ta bobni tashlab yuborgan, M-1344#2 ni esa 18 daqiqadan keyin yubora olmagan.
@@ -266,8 +279,16 @@ async def _step(bot, slots: int, execute, apply) -> None:
     if free and not receiver:
         if time.time() < _hold["until"] or (SLOW_WAIT and slow() and not await _overflow()):
             return
+    n, cap_bytes = free, MAX_BYTES
+    if free and BIG_SLOTS:
+        _big.intersection_update(_running)
+        allow = BIG_SLOTS - len(_big)
+        if allow > 0:
+            n = min(free, allow)               # qolgan o'rinlar keyingi qadamda (kichik boblar bilan) to'ladi
+        else:
+            cap_bytes = min(MAX_BYTES or BIG_BYTES, BIG_BYTES)
     try:
-        got = await _post("claim", n=free, res="1" if receiver else "0", max=MAX_BYTES or "",
+        got = await _post("claim", n=n, res="1" if receiver else "0", max=cap_bytes or "",
                           bigwait=BIG_WAIT, prefer_big="1" if PREFER_BIG else "0")
     except Exception as exc:
         log.warning("Hovuzdan ish olinmadi: %s", _short(exc))
@@ -280,6 +301,8 @@ async def _step(bot, slots: int, execute, apply) -> None:
     # olingan bob egasiz qolmasin
     for job in got.get("jobs", []):
         log.info("Hovuzdan bob olindi: %s (%d-urinish)", job["ref"], job.get("tries", 1))
+        if _job_size(job) > BIG_BYTES:
+            _big.add(job["ref"])
         _running[job["ref"]] = asyncio.create_task(_exec(bot, job, execute))
     if got.get("jobs") and not receiver:
         try:
