@@ -200,7 +200,7 @@ def _account_text(uid: int) -> str:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     uid = update.effective_user.id
-    pages = B.MAX_PDF_PAGES if B else 60
+    pages = B.MAX_PDF_PAGES if B else 75
     text = ("👋 <b>Manhwa tarjimoni</b>\n\n"
             "Bob sahifalarini yuboring - matnni o‘qiyman, o‘zbekchaga tarjima qilaman va "
             "bitta <b>PDF</b> qilib qaytaraman (odatda bir necha daqiqa).\n\n"
@@ -244,7 +244,7 @@ def _limits_text(uid: int | None = None) -> str:
 async def show_pay(update: Update, context, edit=False) -> None:
     """💰 Paket va balans - bitta ekranda: hisob, narxlar, to'lov tartibi, admin."""
     uid = update.effective_user.id
-    pages = B.MAX_PDF_PAGES if B else 60
+    pages = B.MAX_PDF_PAGES if B else 75
     head = (f"{'💎 <b>Obuna va paketlar</b>' if admins.SUBS_TOO else '💰 <b>Paket va balans</b>'}\n\n"
             f"Hisob birligi: <b>1 bob</b> = bitta yuborilgan bob (eng ko‘pi {pages} sahifa). "
             "Sahifa yoki rasm soni alohida sanalmaydi.\n\n")
@@ -314,7 +314,7 @@ async def show_contact(update: Update, context, edit=False) -> None:
 async def show_help(update: Update, context, edit=False) -> None:
     """Qisqa yordam: qanday tarjima, fayllar, hisob, to'lov, muammo."""
     uid = update.effective_user.id
-    pages = B.MAX_PDF_PAGES if B else 60
+    pages = B.MAX_PDF_PAGES if B else 75
     mb = (B.max_upload_bytes(uid) // 2**20) if B else 20
     pay = ("obuna yoki bob paketi (💎 Obuna va paketlar)" if admins.SUBS_TOO else
            "paket balansi (💰 Paket va balans)" if admins.PACKS_ON else "obuna (💎 Obuna va limit)")

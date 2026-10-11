@@ -116,7 +116,7 @@ MAX_PHOTO_BYTES = 10 * 1024 * 1024
 
 # PDF bir martada nechta sahifa. Tezkor OCR bilan sahifa ~5-15 sekund
 # (avval VLM bilan ~2 daqiqa edi, shuning uchun chegara 10 edi).
-MAX_PDF_PAGES = int(os.getenv("MAX_PDF_PAGES", "60"))
+MAX_PDF_PAGES = int(os.getenv("MAX_PDF_PAGES", "75"))
 # Natija PDF sahifalari uchun JPEG sifati (50 MB ga sig'maslik ehtimoli kamroq)
 PDF_JPEG_QUALITY = 88
 # Bitta PDF bob uchun sekin zaxira AI necha marta ishlashi mumkin (har biri ~90 sek)
