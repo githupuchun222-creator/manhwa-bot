@@ -214,6 +214,11 @@ async def main() -> None:
     if bot.shop.ENABLED and await pool.probe():
         log.info("Ish hovuzi yoqiq: %s, %s", pool.WORKER,
                  f"{pool.SLOTS or bot.PARALLEL_JOBS} o'rin" if pool.WORK else "faqat qabul qiluvchi (tarjima qilmaydi)")
+    if bot.shop.ENABLED:
+        try:
+            await bot.shop.apply_admin_cancels(app.bot)
+        except Exception:
+            log.exception("Bekor qilingan boblar hisobi yozilmadi")
     pool_task = asyncio.create_task(pool.run(app.bot, bot.PARALLEL_JOBS, bot.shop.run_pool_chapter,
                                              bot.shop.apply_pool_results))
     # Yarimda qolgan tarjimalar ishga tushishda EMAS, shu nusxa ishni haqiqatan olganda davom ettiriladi

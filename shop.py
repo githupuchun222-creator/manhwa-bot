@@ -1203,6 +1203,48 @@ LOST_BATCH = 20                                                # bitta so'rovda 
 LOST_ON = os.getenv("LOST_REQUEUE", "") == "1"
 
 
+# EGASI BEKOR QILGAN BOBLAR (2026-10-11). Bir mijoz javob kelmagani uchun o'sha 10 bobni 5-6 marta yubordi -
+# navbatda 42 ta takroriy katta bob to'planib, hamma kutib qoldi. Boblar darvozadan tashqaridan olib tashlanadi
+# (/jobs/cancel), HISOB-KITOBI esa shu yerda, bot ichida: cancel-pending.json = [{"order": "M-1", "refs": [...]}].
+# _part_done takroriy yozuvni o'tkazib yuboradi, shuning uchun fayl ikki marta o'qilsa ham hisob ikki marta qaytmaydi.
+CANCEL_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cancel-pending.json")
+
+
+async def apply_admin_cancels(bot) -> int:
+    """Tashqaridan bekor qilingan boblarni buyurtmaga yozadi va hisobni qaytaradi. Nechta bob - shuni qaytaradi."""
+    import json
+    if admins.READONLY.get("on") or not os.path.exists(CANCEL_FILE):
+        return 0
+    try:
+        with open(CANCEL_FILE, encoding="utf-8") as f:
+            items = json.load(f)
+    except (OSError, ValueError) as exc:
+        logger.warning("cancel-pending.json o'qilmadi: %s", exc)
+        return 0
+    per_user: dict[int, int] = {}
+    for it in items:
+        ref, refs = it.get("order"), it.get("refs") or []
+        o = get_order(ref)
+        if not o or not refs:
+            continue
+        fresh = sum(_part_done(ref, int(r.rsplit("#", 1)[1]), False, "", None)[0] for r in refs)
+        if fresh:
+            _refund_flags(o["uid"], o.get("pflags") or {}, fresh)
+            per_user[o["uid"]] = per_user.get(o["uid"], 0) + fresh
+        if len(refs) >= int(o.get("parts", 1)):
+            _set_order(ref, status=ST_CANCEL)
+        logger.info("Egasi bekor qildi: %s - %d ta bob (hisob qaytarildi: %d)", ref, len(refs), fresh)
+    os.replace(CANCEL_FILE, CANCEL_FILE + ".done")
+    for uid, n in per_user.items():
+        try:
+            await bot.send_message(
+                uid, f"❌ Takror yuborilgan {n} ta bob bekor qilindi va hisobingizga qaytarildi.\n"
+                     "Birinchi yuborganingiz tarjima qilinmoqda - qayta yuborish shart emas.")
+        except TelegramError:
+            pass
+    return sum(per_user.values())
+
+
 async def requeue_lost(bot) -> int:
     """Hovuzdan tushib qolgan boblarni qayta navbatga qo'yadi. Nechta bob qo'shilganini qaytaradi."""
     if not LOST_ON or not pool.ready():
