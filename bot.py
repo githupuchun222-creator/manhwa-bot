@@ -1388,6 +1388,37 @@ def _caption(translations: list, header: str = "Tarjima tayyor:") -> str:
     return (header + "\n\n" + "\n".join(lines))[:1000]
 
 
+# UZOQ CHEKLOV (2026-10-11): Telegram bitta chatga 43470 soniya (12 soat) "Flood control" berdi, yuborish
+# sikli esa aytilgan vaqtni to'liq KUTARDI - tayyor boblar 12 soatga uxlab, uch qurilmadagi hamma o'rinni band
+# qildi, navbatda 55 bob to'planib bot "ishlamay" qoldi. Endi FLOOD_MAX dan uzun cheklov kutilmaydi: bob
+# bajarilmadi deb yopiladi (hisob qaytadi, fayllar saqlangan), o'rin bo'shaydi.
+FLOOD_MAX = int(os.getenv("FLOOD_MAX", "120"))
+_flood_until: dict[int, float] = {}
+
+
+class FloodBlocked(TelegramError):
+    """Telegram shu chatga uzoq muddat yozishni taqiqlagan - kutib o'tirilmaydi."""
+
+
+def flood_left(chat_id) -> float:
+    return max(0.0, _flood_until.get(chat_id, 0.0) - time.time())
+
+
+def _flood_wait(exc: RetryAfter, chat_id=None) -> float:
+    """Qisqa cheklovda kutiladigan soniyani qaytaradi; uzog'ida FloodBlocked ko'taradi."""
+    raw = getattr(exc, "retry_after", 5)
+    if hasattr(raw, "total_seconds"):          # yangi versiyalarda timedelta
+        raw = raw.total_seconds()
+    wait = float(raw or 5)
+    if wait > FLOOD_MAX:
+        if chat_id is not None:
+            _flood_until[chat_id] = time.time() + wait
+        logger.warning("Telegram cheklovi juda uzoq (%.0f sek, chat %s) - kutilmaydi", wait, chat_id)
+        raise FloodBlocked(f"Telegram cheklovi: {wait / 3600:.1f} soat") from exc
+    logger.info("Telegram cheklovi: %.0f sek kutilmoqda", wait)
+    return wait
+
+
 async def _edit_status(status_msg, text: str) -> None:
     """Holat xabarini yangilaydi; Telegram xatosi (masalan matn o'zgarmagan) ishni to'xtatmasin."""
     try:
@@ -1608,8 +1639,9 @@ async def _process_pdf(update: Update | None, context: ContextTypes.DEFAULT_TYPE
             _mark_delivered(sent, caption)
             break
         except RetryAfter as exc:
-            raw = getattr(exc, "retry_after", 5)
-            await asyncio.sleep(float(getattr(raw, "total_seconds", lambda: raw)()) + 1)
+            await asyncio.sleep(_flood_wait(exc, chat_id) + 1)
+    else:
+        raise TelegramError("Telegram faylni qabul qilmadi (ko'p urinishdan keyin)")
     await _edit_status(status_msg, "Tayyor ✅")
     logger.info("PDF yuborildi: %d sahifa, %.1f MB, %d sek",
                 limit, len(result_pdf) / 1024 / 1024, elapsed)
@@ -1711,12 +1743,7 @@ async def _send_result(context: ContextTypes.DEFAULT_TYPE, chat_id: int, image_b
                 reply_markup=shop.after_markup(None) if shop.ENABLED else _after_markup(),
             )
         except RetryAfter as exc:
-            raw = getattr(exc, "retry_after", 5)
-            if hasattr(raw, "total_seconds"):          # yangi versiyalarda timedelta
-                raw = raw.total_seconds()
-            wait = float(raw or 5)
-            logger.info("Telegram cheklovi: %.0f sek kutilmoqda", wait)
-            await asyncio.sleep(wait + 1)
+            await asyncio.sleep(_flood_wait(exc, chat_id) + 1)
     raise TelegramError("Telegram rasmni qabul qilmadi (ko'p urinishdan keyin)")
 
 

@@ -22,7 +22,7 @@ import time
 
 from telegram import (InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton,
                       ReplyKeyboardMarkup, Update)
-from telegram.error import BadRequest, NetworkError, TelegramError
+from telegram.error import BadRequest, NetworkError, RetryAfter, TelegramError
 from telegram.ext import ContextTypes
 
 import httpx
@@ -1080,7 +1080,15 @@ async def run_pool_chapter(bot, job: dict) -> dict:
     sink: dict = {}
     t1, t2 = B._job_var.set(wjob), admins.GLOSS_SINK.set(sink)
     try:
-        await B._edit_status(status, f"\U0001f9fe {d['order']}{part}: fayllar yuklab olinmoqda...")
+        # Chat uzoq cheklovda bo'lsa (bot.FLOOD_MAX) bob boshlanmaydi: natijani baribir yuborib bo'lmaydi.
+        if B.flood_left(d["chat"]) > B.FLOOD_MAX:
+            raise B.FloodBlocked(f"Telegram cheklovi: yana {B.flood_left(d['chat']) / 3600:.1f} soat")
+        try:
+            await status.edit_text(f"\U0001f9fe {d['order']}{part}: fayllar yuklab olinmoqda...")
+        except RetryAfter as exc:
+            B._flood_wait(exc, d["chat"])
+        except TelegramError:
+            pass
         pages = await _load_pages(ctx, d["files"])
         if not pages:
             raise RuntimeError("sahifa topilmadi")
