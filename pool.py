@@ -95,11 +95,39 @@ def on_battery() -> bool:
     return False
 
 
+# XOTIRA HIMOYASI (2026-10-11, telefon): runner xotirasi boblar orasida to'planib boradi (10 daqiqada 4,7 GB),
+# Android Termux'ni LOW_MEMORY bilan o'ldiradi (bir kunda 12 marta) - qo'ldagi bob yarim yo'lda qoladi.
+# MAX_RSS_MB dan oshsa restart.flag qo'yiladi: runner qo'ldagi bobni TUGATIB chiqadi, run4.sh toza qayta yoqadi.
+MAX_RSS_MB = int(os.getenv("MAX_RSS_MB", "0"))
+_RESTART_FLAG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "restart.flag")
+
+
+def rss_mb() -> int:
+    try:
+        with open("/proc/self/statm") as f:
+            return int(f.read().split()[1]) * os.sysconf("SC_PAGE_SIZE") // 2**20
+    except Exception:
+        return 0                     # Windows - o'lchanmaydi
+
+
+def _watch_rss() -> None:
+    if not MAX_RSS_MB or os.path.exists(_RESTART_FLAG):
+        return
+    used = rss_mb()
+    if used > MAX_RSS_MB:
+        log.warning("Xotira %d MB (chegara %d) - ish tugagach toza qayta ishga tushadi", used, MAX_RSS_MB)
+        try:
+            open(_RESTART_FLAG, "w").close()
+        except OSError as exc:
+            log.warning("restart.flag qo'yilmadi: %s", exc)
+
+
 def _watch_lag(loop) -> None:
     """Alohida oqim: tizim uxlab qolganini (vaqt sakrashini) sezadi - event loop bandligidan farqli."""
     last = time.monotonic()
     while True:
         time.sleep(5)
+        _watch_rss()
         now = time.monotonic()
         gap, last = now - last, now
         if gap > LAG_DROP and _running:
