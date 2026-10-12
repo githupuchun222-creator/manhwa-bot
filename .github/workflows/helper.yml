@@ -1,0 +1,124 @@
+name: helper
+# IKKINCHI GITHUB YORDAMCHISI (2026-10-12, foydalanuvchi: "botni tezlashtir") - @manhwatarjima_bot.
+# Xabar QABUL QILMAYDI, ro'yxatga yozmaydi (HELPER_ONLY) - faqat ish hovuzidan bob olib tarjima qiladi.
+# bot.yml bilan birga ishlaydi: navbat ~2 baravar tez bo'shaydi (har birida 2 o'rin).
+# Kim yoqadi: bot.yml har ishga tushganda + o'zi MAX_LIFE dan keyin toza chiqib, o'rniga yangisini chaqiradi.
+# To'xtatish: Actions'da shu ishni Cancel qilish (bekor qilingan ish o'rniga yangisini chaqirmaydi).
+# DIQQAT: "Bot" qadamidagi tarjima sozlamalari bot.yml bilan BIR XIL bo'lsin (sifat farq qilmasin).
+# Darvoza: manhwa-gate-4.compass-crm.workers.dev (manhwa-gate/wrangler.4.toml)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: write
+concurrency:
+  group: helper
+  cancel-in-progress: false
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        id: py
+        with:
+          python-version: "3.12"
+      - name: Kutubxonalar (keshdan)
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          # Python versiyasi kalitda: GitHub 3.12.x ni yangilasa .venv/bin/python havolasi buzilib,
+          # ishga tushish "No such file" (exit 127) bilan yiqilardi (2026-10-08)
+          key: venv-${{ runner.os }}-${{ steps.py.outputs.python-version }}-${{ hashFiles('requirements.txt') }}-v2
+      - name: O'rnatish
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install -r requirements.txt
+          BOT_TOKEN=x OWNER_ID=1 .venv/bin/python -c "import fast_ocr; fast_ocr.warm_up()"
+      - name: Shrift (Digital Strip, Blambot - repoga qo'yilmaydi, litsenziya)
+        continue-on-error: true
+        run: |
+          curl -fsSL -o /tmp/ds.zip "https://dl.dafont.com/dl/?f=digital_strip"
+          unzip -oj /tmp/ds.zip digistrip.ttf -d assets/fonts
+      - name: LaMa modeli (rasm ustidagi yozuvni tozalash - keshdan)
+        id: lama
+        uses: actions/cache@v4
+        with:
+          path: assets/models
+          key: lama-fp32-v1
+      - name: LaMa modelini yuklash
+        if: steps.lama.outputs.cache-hit != 'true'
+        continue-on-error: true
+        run: |
+          mkdir -p assets/models
+          curl -fsSL -o assets/models/lama_fp32.onnx "https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx"
+      - name: Bot
+        env:
+          HELPER_ONLY: "1"
+          # darvoza qo'riqchisi "backup-" ishchini asosiy GitHub runneri deb biladi - bu boshqa nomda
+          POOL_NAME: helper2
+          # bo'sh paytda darvozani kamroq so'raydi (Cloudflare kunlik so'rov limiti)
+          POOL_POLL_EVERY: "20"
+          # 4,5 soatdan keyin yangi bob olmaydi: qo'lidagi katta bob 330 daqiqalik chegaragacha ulgursin
+          MAX_LIFE: "16200"
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          OWNER_ID: ${{ secrets.OWNER_ID }}
+          GATE_KEY: ${{ secrets.GATE_KEY }}
+          GATE_URL: https://manhwa-gate-4.compass-crm.workers.dev
+          ADMINS_URL: https://manhwa-gate-4.compass-crm.workers.dev/admins
+          OCR_ENGINE: fast
+          # @gardenhwa_bot bilan teng: Gemini tarjima tahriri (o'z kaliti, manhwa-gate/.gemini.4.key) + tozalash v2
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # Zaxira AI (2026-10-09): Gemini limiti tugasa Google'dan oldin Groq (sir bo'lmasa - o'chiq)
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          RENDER_V2: "1"
+          # Faqat shu botda: pufakcha shakliga qarab shrift (oval/to'rtburchak/tikanli/rasm ustida)
+          FONT_STYLES: "1"
+          # Ochiq bot: tarjimadan hamma foydalanadi (qoidalar/adminlar - faqat adminlarga)
+          PUBLIC_BOT: "1"
+          # Oddiy foydalanuvchiga 1 ta bepul bob, keyin egasiga murojaat (@sharofovsaid)
+          FREE_CHAPTERS: "1"
+          # Bitta odam kuniga eng ko'pi 200 bob (adminlar cheklanmaydi; Toshkent 00:00 da yangilanadi)
+          DAILY_LIMIT: "200"
+          # Buyurtma dizayni (shop.py): 6 tugmali menyu, bosqichli buyurtma, Buyurtmalarim, /admin panel
+          SHOP_UI: "1"
+          # Navbatsiz: bir vaqtda 3 ta ish, bo'sh foydalanuvchi oldinga (bot.py _pick_job)
+          PARALLEL_JOBS: "4"
+          # hovuzdan bir vaqtda 2 bob (2026-10-08): 4 ta bob 4 vCPU da bir-biriga xalaqit berib har biri sekin tugardi
+          POOL_SLOTS: "2"
+          # Bob bir yo'la tarjima (2026-10-01): Gemini'ga sahifa boshiga emas, 40 qatorlik bo'laklarda
+          # (13 sahifali bob: 13 so'rov -> 1-2). Lite modellar ham "low" fikrlash bilan (sifat uchun).
+          CHAPTER_BATCH: "1"
+          GEMINI_CHUNK: "40"
+          GEMINI_MODELS: "gemini-3.5-flash:low,gemini-3.8-flash:low,gemini-3.7-flash:low,gemini-3.6-flash:low,gemini-3-flash-preview:low,gemini-3.5-flash-lite:low,gemini-3.1-flash-lite:low,gemini-3.1-flash-lite-preview:low,gemma-4-31b-it"
+          OWNER_USERNAME: sharofovsaid
+          # Chegirma (2026-10-02, egasining e'loni): oylik 50 -> 35 ming, haftalik 25 -> 15 ming
+          SUB_PRICE: "35 000 so'm"
+          SUB_WEEK_PRICE: "15 000 so'm"
+          SUB_OLD_PRICE: "50 000 so'm"
+          SUB_WEEK_OLD_PRICE: "25 000 so'm"
+          # Obuna + limitli paketlar birga (2026-10-08): 100 bob 5 000, 200 bob 10 000, 300 bob 13 000 so'm
+          PACKS: "100:5000,200:10000,300:13000"
+          SUBS_TOO: "1"
+          SUB_DAY_PRICE: "5 000 so'm"      # kunlik obuna (2026-10-08)
+          # 20 MB dan katta fayllar (bigfile.py, MTProto)
+          TG_API_ID: ${{ secrets.TG_API_ID }}
+          TG_API_HASH: ${{ secrets.TG_API_HASH }}
+          BOT_SLOT: "1"
+          # Uxlamaydi: faqat 5 soatlik chegarada almashadi (darvoza ALWAYS_ON)
+          IDLE_EXIT: "999999"
+        run: |
+          if ! .venv/bin/python -V; then
+            echo "Kesh buzilgan - qayta o'rnatiladi"
+            rm -rf .venv && python -m venv .venv && .venv/bin/pip install -q -r requirements.txt
+          fi
+          .venv/bin/python runner.py
+      - name: O'rniga yangi yordamchi (faqat toza chiqqanda)
+        if: success()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run helper.yml -R "${{ github.repository }}" --ref "${{ github.ref_name }}"

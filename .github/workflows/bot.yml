@@ -3,6 +3,9 @@ name: bot
 # Darvoza: manhwa-gate-4.compass-crm.workers.dev (manhwa-gate/wrangler.4.toml)
 on:
   workflow_dispatch:
+permissions:
+  contents: read
+  actions: write
 concurrency:
   group: bot
   cancel-in-progress: false
@@ -47,6 +50,12 @@ jobs:
         run: |
           mkdir -p assets/models
           curl -fsSL -o assets/models/lama_fp32.onnx "https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx"
+      # Ikkinchi yordamchi (helper.yml, 2026-10-12): ishlab turgan bo'lsa yangisi navbatda kutadi (bittadan ortiq bo'lmaydi)
+      - name: Ikkinchi yordamchini chaqirish
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run helper.yml -R "${{ github.repository }}" --ref "${{ github.ref_name }}"
       - name: Bot
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}

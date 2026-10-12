@@ -29,9 +29,13 @@ log = logging.getLogger("pool")
 GATE_URL = os.getenv("GATE_URL", "").rstrip("/")
 GATE_KEY = os.getenv("GATE_KEY", "")
 ROLE = os.getenv("RUNNER_ROLE", "backup")
-WORKER = f"{ROLE}-{os.getpid()}-{int(time.time()) % 100000}"    # har jarayon - alohida ishchi
+# POOL_NAME (2026-10-12, ikkinchi GitHub yordamchisi - helper.yml): ishchi nomining boshi. Darvoza qo'riqchisi
+# (helperWatch) "backup-" bilan boshlangan ishchini ASOSIY GitHub runneri deb biladi - ikkinchi yordamchi ham shu
+# nomda bo'lsa, asosiysi osilib qolganini qo'riqchi sezmay qolardi.
+WORKER = f"{os.getenv('POOL_NAME') or ROLE}-{os.getpid()}-{int(time.time()) % 100000}"    # har jarayon - alohida ishchi
 WANTED = os.getenv("POOL", "1") == "1" and bool(GATE_URL)
-POLL_EVERY = 12            # bo'sh ishchi darvozani shuncha soniyada bir marta so'raydi (Cloudflare limiti)
+# bo'sh ishchi darvozani shuncha soniyada bir marta so'raydi (Cloudflare limiti)
+POLL_EVERY = float(os.getenv("POOL_POLL_EVERY", "12"))
 BEAT_EVERY = 45            # darvozadagi muddat 150 s - uch marta ulguradi
 # Telefon: xotirasi kam (32 sahifali bobda Android Termux'ni o'ldirgan) - faqat kichik boblar, bittadan.
 MAX_BYTES = int(os.getenv("POOL_MAX_BYTES", str(14 * 2**20) if ROLE == "phone" else "0"))

@@ -174,9 +174,12 @@ async def _helper_main() -> None:
         return asyncio.create_task(pool.run(app.bot, bot.PARALLEL_JOBS, bot.shop.run_pool_chapter,
                                             bot.shop.apply_pool_results))
     task = start()
+    started = time.time()
     while True:
         pool.state["receiver"] = False
-        pool.state["draining"] = RESTART_FLAG.exists()
+        # GitHub yordamchisi (helper.yml) MAX_LIFE dan keyin yangi bob olmaydi, qo'lidagisini tugatib chiqadi -
+        # GitHub uni 6 soatlik chegarada bobning o'rtasida o'ldirmasin (o'rniga yangisini workflow o'zi chaqiradi)
+        pool.state["draining"] = RESTART_FLAG.exists() or (ROLE == "backup" and time.time() - started > MAX_LIFE)
         if pool.state["draining"] and not pool.busy():
             break
         if pool.WANTED and task.done():
@@ -188,7 +191,7 @@ async def _helper_main() -> None:
     await asyncio.sleep(2)             # oxirgi natija darvozaga yetib olsin
     await app.shutdown()
     RESTART_FLAG.unlink(missing_ok=True)
-    log.info("Ish tugadi - yangi kod bilan qayta ishga tushiriladi")
+    log.info("Ish tugadi - yordamchi qayta ishga tushiriladi")
 
 
 async def main() -> None:
