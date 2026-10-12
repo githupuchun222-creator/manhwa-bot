@@ -660,7 +660,7 @@ async def _learn_from_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         lines: list[str] = []
         seen: set[str] = set()
         for n, jpeg in enumerate(pages, 1):
-            await _edit_status(status, f"🎓 Namuna o‘qilmoqda: {n}/{len(pages)} sahifa...")
+            await _edit_status(status, f"🎓 Namuna o‘qilmoqda: {n}/{len(pages)} sahifa...", soft=True)
             items = await asyncio.to_thread(read_page, jpeg, "image/jpeg")
             for it in items or []:
                 t = " ".join((it.get("original") or "").split())
@@ -1406,23 +1406,49 @@ def flood_left(chat_id) -> float:
 
 def _flood_wait(exc: RetryAfter, chat_id=None) -> float:
     """Qisqa cheklovda kutiladigan soniyani qaytaradi; uzog'ida FloodBlocked ko'taradi."""
-    raw = getattr(exc, "retry_after", 5)
-    if hasattr(raw, "total_seconds"):          # yangi versiyalarda timedelta
-        raw = raw.total_seconds()
-    wait = float(raw or 5)
+    wait = _note_flood(exc, chat_id)
     if wait > FLOOD_MAX:
-        if chat_id is not None:
-            _flood_until[chat_id] = time.time() + wait
         logger.warning("Telegram cheklovi juda uzoq (%.0f sek, chat %s) - kutilmaydi", wait, chat_id)
         raise FloodBlocked(f"Telegram cheklovi: {wait / 3600:.1f} soat") from exc
     logger.info("Telegram cheklovi: %.0f sek kutilmoqda", wait)
     return wait
 
 
-async def _edit_status(status_msg, text: str) -> None:
-    """Holat xabarini yangilaydi; Telegram xatosi (masalan matn o'zgarmagan) ishni to'xtatmasin."""
+# CHEKLOVNING SABABI (2026-10-12): "O'qilmoqda: 12/75-sahifa" HAR sahifadan keyin tahrirlanardi - 75 sahifali
+# bobda ~2 daqiqada 75 ta so'rov, bir mijozning bir nechta bobi uch qurilmada birga ketsa bitta chatga
+# daqiqasiga yuzlab. Telegram "kuting" (RetryAfter) desa ham bu yerda yutib yuborilib, tahrirlash davom etardi -
+# jazo 12 soatgacha o'sdi. Endi: hisoblagich (soft) bitta chatda STATUS_GAP soniyada ko'pi bilan bir marta,
+# cheklov paytida esa shu chatning holat xabariga UMUMAN tegilmaydi.
+STATUS_GAP = float(os.getenv("STATUS_GAP", "8"))
+_status_at: dict[int, float] = {}
+
+
+def _note_flood(exc: RetryAfter, chat_id=None) -> float:
+    """Telegram aytgan kutish vaqtini (soniya) qaytaradi va chatni shu vaqtgacha band deb belgilaydi."""
+    raw = getattr(exc, "retry_after", 5)
+    if hasattr(raw, "total_seconds"):          # yangi versiyalarda timedelta
+        raw = raw.total_seconds()
+    wait = float(raw or 5)
+    if chat_id is not None:
+        _flood_until[chat_id] = max(_flood_until.get(chat_id, 0.0), time.time() + wait)
+    return wait
+
+
+async def _edit_status(status_msg, text: str, soft: bool = False) -> None:
+    """Holat xabarini yangilaydi; Telegram xatosi (masalan matn o'zgarmagan) ishni to'xtatmasin.
+
+    soft - oraliq hisoblagich ("12/75-sahifa"): tez-tez kelsa tashlab yuboriladi."""
+    chat = getattr(status_msg, "chat_id", None)
+    if chat is not None:
+        now = time.time()
+        if flood_left(chat) > 0 or (soft and now - _status_at.get(chat, 0.0) < STATUS_GAP):
+            return
+        _status_at[chat] = now
     try:
         await status_msg.edit_text(text)
+    except RetryAfter as exc:
+        logger.warning("Telegram cheklovi (holat xabari, chat %s): %.0f sek - shu vaqtgacha tahrirlanmaydi",
+                       chat, _note_flood(exc, chat))
     except TelegramError:
         pass
 
@@ -1480,7 +1506,7 @@ async def _chapter_batch(pages, limit: int, budget: dict, status_msg, t0: float,
         progress["n"] += 1
         elapsed = int(time.time() - t0)
         await _edit_status(status_msg, f"O'qilmoqda: {progress['n']}/{limit}-sahifa "
-                                       f"({elapsed // 60}:{elapsed % 60:02d} o'tdi)")
+                                       f"({elapsed // 60}:{elapsed % 60:02d} o'tdi)", soft=True)
 
     await asyncio.gather(*(read_one(i, num, jpeg) for i, (num, _total, jpeg) in enumerate(pages)))
     await _edit_status(status_msg, "Butun bob tarjima qilinmoqda (AI)...")
@@ -1575,7 +1601,7 @@ async def _process_pdf(update: Update | None, context: ContextTypes.DEFAULT_TYPE
     for num, _total, jpeg in ([] if CHAPTER_BATCH else pages):
         elapsed = int(time.time() - t0)
         await _edit_status(status_msg, f"Tarjima qilinmoqda: {num}/{limit}-sahifa "
-                                       f"({elapsed // 60}:{elapsed % 60:02d} o'tdi)")
+                                       f"({elapsed // 60}:{elapsed % 60:02d} o'tdi)", soft=True)
         try:
             async with _ai_semaphore:
                 read = await asyncio.to_thread(read_page, jpeg, "image/jpeg", budget)
@@ -1830,6 +1856,12 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     # oddiy "httpx.ReadError" uchun ham "Botda xatolik" xabari ketgan.
     if isinstance(context.error, (NetworkError, TimedOut)):
         logger.warning("Vaqtinchalik tarmoq xatosi (o'zi tiklanadi): %s", context.error)
+        return
+    if isinstance(context.error, RetryAfter):
+        # Telegram shu chatga yozishni vaqtincha taqiqlagan - javob berib bo'lmaydi; chat belgilab qo'yiladi
+        chat = getattr(getattr(update, "effective_chat", None), "id", None)
+        logger.warning("Telegram cheklovi (chat %s): %.0f sek - javob yuborilmadi", chat,
+                       _note_flood(context.error, chat))
         return
     logger.exception("Global handlerda tutilmagan xato", exc_info=context.error)
     try:
