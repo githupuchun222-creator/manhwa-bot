@@ -68,14 +68,18 @@ async def download_file(tg_bot, file_id: str, size: int = 0) -> bytes:
     Avval bitta urinish muvaffaqiyatsiz bo'lsa butun buyurtma xato bilan yopilardi (2026-10-02: sekin
     internetda 17 MB fayl 60 s ga sig'may, kechqurun 4 ta ish shunday yiqildi).
     """
+    started = time.time()
     if size > MAX_DOWNLOAD_BYTES:
-        return await bigfile.download(file_id, BOT_TOKEN)
+        data = await bigfile.download(file_id, BOT_TOKEN)
+        shop.pool.note_download(len(data), time.time() - started)
+        return data
     last: Exception | None = None
     for attempt in range(1, DOWNLOAD_TRIES + 1):
         try:
             tg_file = await tg_bot.get_file(file_id, read_timeout=60, connect_timeout=30, pool_timeout=30)
             buf = io.BytesIO()
             await tg_file.download_to_memory(out=buf, read_timeout=180, connect_timeout=30, pool_timeout=30)
+            shop.pool.note_download(buf.tell(), time.time() - started)     # qayta urinishlar ham hisobda
             return buf.getvalue()
         except (TimedOut, NetworkError) as exc:
             last = exc

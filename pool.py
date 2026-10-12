@@ -69,6 +69,60 @@ RELEASE_HOLD = 600                              # bobni tarmoq sabab qaytargan q
 _hold = {"until": 0.0}
 
 
+# SEKIN TARMOQ (2026-10-12, foydalanuvchi: "tezligini to'g'rilab, avvalgidek tez qil"). Noutbuk quvvatga ulangan,
+# lekin begona Wi-Fi'da edi: fayl 0.22 MB/s da yuklandi (odatda 2+), 12:00-14:00 da 6400 ta tarmoq xatosi. U
+# "tez qurilma" sifatida 4 ta bobni birdan olib, har birini 20+ daqiqa ushladi (M-1872#7 - 1236 s), GitHub esa
+# xuddi shunday bobni ~5 daqiqada tugatadi. Endi tarmoq sekin bo'lsa noutbuk batareyadagidek ishlaydi: bittadan
+# va faqat SLOW_WAIT dan beri hech kim olmagan bobni. Belgi: yuklash NET_SLOW_MBS dan sekin yoki NET_FAIL_WINDOW
+# ichida NET_FAILS ta ulanish xatosi. Tez yuklash (>= NET_SLOW_MBS) belgini darhol olib tashlaydi.
+NET_SLOW_MBS = float(os.getenv("POOL_NET_SLOW_MBS", "1.0"))
+NET_SLOW_HOLD = int(os.getenv("POOL_NET_SLOW_HOLD", "1800"))
+NET_MIN_BYTES = 3 * 2**20                       # kichik faylda tezlik o'lchovi ishonchsiz
+NET_FAILS = 4
+NET_FAIL_WINDOW = 300
+_net = {"until": 0.0, "proved": False}       # proved - shu ishga tushishda tez yuklash ko'rilgan
+_net_fails: list[float] = []
+
+
+def _net_mark(why: str) -> None:
+    if ROLE != "primary" or not NET_SLOW_MBS:
+        return
+    if time.time() >= _net["until"]:
+        log.warning("Tarmoq sekin (%s) - %d daqiqa bittadan va faqat kutib qolgan bob olinadi", why, NET_SLOW_HOLD // 60)
+    _net["until"] = time.time() + NET_SLOW_HOLD
+
+
+def note_download(size: int, seconds: float) -> None:
+    """Fayl yuklash tezligi: sekin bo'lsa runner 'sekin qurilma'ga o'tadi, tez bo'lsa darhol qaytadi."""
+    if size < NET_MIN_BYTES:
+        return
+    speed = size / 2**20 / max(seconds, 0.01)
+    if speed < NET_SLOW_MBS:
+        _net_mark(f"yuklash {speed:.2f} MB/s")
+        return
+    _net["proved"] = True
+    if time.time() < _net["until"]:
+        log.info("Tarmoq tiklandi (yuklash %.2f MB/s) - yana to'liq tezlikda", speed)
+        _net["until"] = 0.0
+        _net_fails.clear()
+
+
+def note_net_fail() -> None:
+    now = time.time()
+    _net_fails[:] = [t for t in _net_fails if now - t < NET_FAIL_WINDOW] + [now]
+    if len(_net_fails) >= NET_FAILS:
+        _net_mark(f"{NET_FAIL_WINDOW // 60} daqiqada {len(_net_fails)} ta ulanish xatosi")
+
+
+def net_slow() -> bool:
+    return ROLE == "primary" and time.time() < _net["until"]
+
+
+def one_at_a_time() -> bool:
+    """Bittadan bob: batareyada, sekin tarmoqda va (noutbuk) tarmoq tezligi hali o'lchanmaganida."""
+    return on_battery() or net_slow() or (ROLE == "primary" and bool(NET_SLOW_MBS) and not _net["proved"])
+
+
 class Release(Exception):
     """Bob shu qurilmada tugamadi (tarmoq uzildi) - xato deb yozilmaydi, navbatga qaytadi (boshqa runner oladi)."""
 
@@ -157,7 +211,7 @@ def _drop_all() -> None:
 def slow() -> bool:
     if SLOW in ("0", "1"):
         return SLOW == "1"
-    return ROLE == "phone" or (ROLE != "backup" and on_battery())
+    return ROLE == "phone" or (ROLE != "backup" and (on_battery() or net_slow()))
 
 
 def ready() -> bool:
@@ -173,11 +227,15 @@ def kick() -> None:
 
 
 async def _post(path: str, json=None, **params) -> dict:
-    async with httpx.AsyncClient(timeout=25) as c:
-        r = await c.post(f"{GATE_URL}/jobs/{path}", json=json, params={"w": WORKER, **params},
-                         headers={"x-key": GATE_KEY})
-        r.raise_for_status()
-        return r.json()
+    try:
+        async with httpx.AsyncClient(timeout=25) as c:
+            r = await c.post(f"{GATE_URL}/jobs/{path}", json=json, params={"w": WORKER, **params},
+                             headers={"x-key": GATE_KEY})
+    except httpx.TransportError:
+        note_net_fail()
+        raise
+    r.raise_for_status()
+    return r.json()
 
 
 async def probe() -> bool:
@@ -271,7 +329,7 @@ async def _step(bot, slots: int, execute, apply) -> None:
             await probe()
         return
     await _flush()
-    cap = 1 if on_battery() else slots
+    cap = 1 if one_at_a_time() else slots
     free = 0 if (state["draining"] or not WORK) else max(0, min(slots, cap) - len(_running))
     receiver = state["receiver"]
     if not free and not receiver:
