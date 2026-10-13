@@ -338,9 +338,15 @@ async def _step(bot, slots: int, execute, apply) -> None:
     receiver = state["receiver"]
     if not free and not receiver:
         return
-    if free and not receiver:
-        if time.time() < _hold["until"] or (SLOW_WAIT and slow() and not await _overflow()):
+    # SEKIN QABUL QILUVCHI HAM KUTADI (2026-10-13, foydalanuvchi: "ba'zi boblar hali kutilmoqda, yangilari esa tezroq
+    # tayyor bo'lmoqda"). Oldin bu qoida qabul qiluvchiga tegmasdi (u natijalarni olish uchun baribir "claim"
+    # qilishi kerak) - batareyadagi, telefon hotspotidagi noutbuk har buyurtmadan bitta bobni DARHOL olib,
+    # 11 daqiqa (eng ko'pi 33) ushlagan; GitHub xuddi shunday bobni ~7 daqiqada yetkazgan (bir kunda 67 ta bob).
+    # Endi sekin qabul qiluvchi natijalarni oladi (n=0), bobni esa faqat SLOW_WAIT dan beri hech kim olmasa.
+    if free and (time.time() < _hold["until"] or (SLOW_WAIT and slow() and not await _overflow())):
+        if not receiver:
             return
+        free = 0
     n, cap_bytes = free, MAX_BYTES
     if free and BIG_SLOTS:
         _big.intersection_update(_running)
@@ -380,8 +386,15 @@ async def _step(bot, slots: int, execute, apply) -> None:
             log.warning("Natijalar yozilmadi: %s", _short(exc))
 
 
+_overflow_seen = {"t": 0.0}
+
+
 async def _overflow() -> bool:
     """Navbatda SLOW_WAIT soniyadan beri kutayotgan (bizga sig'adigan) bob bormi - sekin qurilma shundagina oladi."""
+    # navbat bo'sh ekani oxirgi "claim" javobidan ma'lum - darvozani bekorga so'ramaymiz (Cloudflare limiti)
+    if not state["open"] and time.time() - _overflow_seen["t"] < 60:
+        return False
+    _overflow_seen["t"] = time.time()
     try:
         async with httpx.AsyncClient(timeout=25) as c:
             r = await c.get(f"{GATE_URL}/jobs/list", params={"w": WORKER}, headers={"x-key": GATE_KEY})
