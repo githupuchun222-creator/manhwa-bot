@@ -1777,6 +1777,17 @@ async def _send_result(context: ContextTypes.DEFAULT_TYPE, chat_id: int, image_b
     raise TelegramError("Telegram rasmni qabul qilmadi (ko'p urinishdan keyin)")
 
 
+async def handle_apk(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """.apk fayl: tarjima navbatiga HECH QACHON tushmaydi. Egasi yuborsa - ilova fayli yangilanadi (shop.on_file)."""
+    doc = update.message.document
+    logger.info("QABUL QILINDI (ilova): user=%s, fayl=%s, %s MB", update.effective_user.id,
+                doc.file_name, (doc.file_size or 0) // 2**20)
+    admins.remember_user(update.effective_user)
+    if shop.ENABLED and await shop.on_file(update, context):
+        return
+    await update.message.reply_text("Bu ilova fayli - uni tarjima qilib bo‘lmaydi. Bob uchun PDF, ZIP yoki rasm yuboring.")
+
+
 async def handle_other(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Rasm bo'lmagan xabarlar. Avval bot bunday xabarlarga JIM qolardi —
     foydalanuvchi bot ishlayaptimi yoki yo'qmi bilolmasdi."""
@@ -1925,6 +1936,10 @@ def _build_app(token: str) -> Application:
         | filters.Document.ZIP
         | filters.Document.FileExtension("zip", case_sensitive=False)
         | filters.Document.FileExtension("cbz", case_sensitive=False), handle_photo))
+    # Ilova fayli (.apk): bot egasi yuborsa - "Ilovani yuklab olish" tugmasi shu faylni beradi (admin panel -> Ilova).
+    # Avval bu filtrda yo'q edi - .apk handle_other ga tushib, hech qachon saqlanmasdi.
+    app.add_handler(MessageHandler(filters.Document.FileExtension("apk", case_sensitive=False)
+                                   | filters.Document.MimeType("application/vnd.android.package-archive"), handle_apk))
     # Qolgan hamma narsa (buyruqlardan tashqari) - jim qolmaslik uchun
     app.add_handler(MessageHandler(~filters.COMMAND, handle_other))
     app.add_handler(CallbackQueryHandler(on_queue_button, pattern=r"^qcancel:"))

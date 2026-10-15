@@ -728,19 +728,22 @@ async def on_file(update: Update, context) -> bool:
         await msg.reply_text(body, parse_mode="HTML", reply_markup=markup)
         return True
     doc = update.effective_message.document
-    if adm and adm[0] == "app" and admins.is_superadmin(uid) and not (doc and (doc.file_name or "").lower().endswith(".apk")):
+    is_apk = bool(doc) and ((doc.file_name or "").lower().endswith(".apk")
+                            or (doc.mime_type or "") == "application/vnd.android.package-archive")
+    if adm and adm[0] == "app" and admins.is_superadmin(uid) and not is_apk:
         await update.effective_message.reply_text("Bu .apk fayl emas. Ilovaning .apk faylini yuboring.\n"
                                                   "Bekor qilish: /start")
         return True
-    if doc and (doc.file_name or "").lower().endswith(".apk"):
+    if is_apk:
         # .apk tarjima qilinmaydi. Super admin yuborsa - "Ilovani yuklab olish" endi shu faylni beradi.
         if admins.is_superadmin(uid):
             context.user_data.pop("await_adm", None)
-            admins.put_app({"file_id": doc.file_id, "name": doc.file_name, "size": doc.file_size or 0,
+            name = doc.file_name or "manhwa-tarjima.apk"
+            admins.put_app({"file_id": doc.file_id, "name": name, "size": doc.file_size or 0,
                             "at": time.time()})
-            _log(uid, f"yangi ilova yukladi: {doc.file_name}")
+            _log(uid, f"yangi ilova yukladi: {name}")
             await update.effective_message.reply_text(
-                f"✅ Ilova fayli yangilandi: <b>{html.escape(doc.file_name)}</b> "
+                f"✅ Ilova fayli yangilandi: <b>{html.escape(name)}</b> "
                 f"({(doc.file_size or 0) // 2**20} MB).\n<b>{BTN_APP}</b> tugmasi endi shu faylni beradi.",
                 parse_mode="HTML")
             await app_panel(update, context)
