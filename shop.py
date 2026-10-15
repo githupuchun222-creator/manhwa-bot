@@ -1057,7 +1057,8 @@ async def _pool_order(context, order: dict, flags: dict, status=None) -> bool:
         return False
     jobs = [{"ref": f"{ref}#{i}", "uid": uid, "size": sum(int(f.get("size") or 0) for f in g),
              "data": {"order": ref, "i": i, "n": n, "uid": uid, "chat": uid, "mid": m.message_id,
-                      "files": g, "name": _chapter_name(order, g, i, n), "flags": flags}}
+                      "files": g, "name": _chapter_name(order, g, i, n), "flags": flags,
+                      "owner": pool.ROLE}}
             for i, (g, m) in enumerate(zip(groups, msgs), 1)]
     if not await pool.add(jobs):
         for m in (msgs if n > 1 else []):

@@ -1762,6 +1762,12 @@ def _draw_tilted(out: Image.Image, job, angle: float) -> None:
     pw, ph = int((x2 - x1) * 0.3) + 10, int((y2 - y1) * 0.6) + 10
     W, H = out.size
     rx1, ry1, rx2, ry2 = max(0, x1 - pw), max(0, y1 - ph), min(W, x2 + pw), min(H, y2 + ph)
+    # QUTI SAHIFADAN TASHQARIDA (2026-10-16): qiya yozuvning hisoblangan qutisi sahifa chetidan butunlay chiqib
+    # ketsa qatlam o'lchami manfiy bo'lib, BUTUN BOB "Width and height must be >= 0" bilan yiqilardi (2 kunda
+    # 13 bob, bir xil boblar qayta-qayta). Endi bunday yozuv burilmasdan, odatdagidek chiziladi.
+    if rx2 - rx1 < 2 or ry2 - ry1 < 2:
+        _draw_job(out, ImageDraw.Draw(out), job, (0, 0))
+        return
     layer = Image.new("RGBA", (rx2 - rx1, ry2 - ry1), (0, 0, 0, 0))
     ldraw = ImageDraw.Draw(layer)
     _draw_job(out, ldraw, job, (rx1, ry1))
@@ -1987,10 +1993,16 @@ def render_translation(image_bytes: bytes, translations: list[dict], quality: in
         mode, box, bg_color, text, extra = job[:5]
         _style.name = job[9] if mode == "bubble" else ("speech" if mode == "flat" else mode)
         angle = job[-1] if mode in ("bubble", "system", "art", "flat") else 0.0
-        if abs(angle) >= TILT_MIN and abs(angle) <= TILT_MAX:
-            _draw_tilted(out, job, angle)
-            continue
-        _draw_job(out, draw, job, (0, 0))
+        # bitta yozuvdagi kutilmagan xato butun bobni yiqitmasin - o'sha yozuv tashlab ketiladi (logda qoladi)
+        try:
+            if abs(angle) >= TILT_MIN and abs(angle) <= TILT_MAX:
+                _draw_tilted(out, job, angle)
+                continue
+            _draw_job(out, draw, job, (0, 0))
+        except Exception:
+            logger.exception("Yozuv chizilmadi (%s, %r) - o'tkazib yuborildi", mode, box)
+            if report is not None:
+                report["skipped"] = report.get("skipped", 0) + 1
 
     _style.name = "speech"
     return encode_jpeg(out, quality=quality)

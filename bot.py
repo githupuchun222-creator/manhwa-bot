@@ -70,7 +70,7 @@ async def download_file(tg_bot, file_id: str, size: int = 0) -> bytes:
     """
     started = time.time()
     if size > MAX_DOWNLOAD_BYTES:
-        data = await bigfile.download(file_id, BOT_TOKEN)
+        data = await bigfile.download(file_id, BOT_TOKEN, size)
         shop.pool.note_download(len(data), time.time() - started)
         return data
     last: Exception | None = None
@@ -79,6 +79,9 @@ async def download_file(tg_bot, file_id: str, size: int = 0) -> bytes:
             tg_file = await tg_bot.get_file(file_id, read_timeout=60, connect_timeout=30, pool_timeout=30)
             buf = io.BytesIO()
             await tg_file.download_to_memory(out=buf, read_timeout=180, connect_timeout=30, pool_timeout=30)
+            # chala kelgan fayl (hajmi Telegram aytganidan kam) - xato deb qayta uriniladi (bigfile.py, 2026-10-16)
+            if size and buf.tell() < size:
+                raise NetworkError(f"fayl chala keldi ({buf.tell()} / {size} bayt)")
             shop.pool.note_download(buf.tell(), time.time() - started)     # qayta urinishlar ham hisobda
             return buf.getvalue()
         except (TimedOut, NetworkError) as exc:
@@ -88,7 +91,7 @@ async def download_file(tg_bot, file_id: str, size: int = 0) -> bytes:
     if bigfile.enabled():
         try:
             logger.warning("Fayl oddiy yo'l bilan olinmadi - MTProto orqali urinilmoqda")
-            return await bigfile.download(file_id, BOT_TOKEN)
+            return await bigfile.download(file_id, BOT_TOKEN, size)
         except Exception as exc:
             logger.warning("MTProto orqali ham olinmadi: %s", exc)
     raise last
@@ -1698,7 +1701,7 @@ async def _process_photo(update: Update, context: ContextTypes.DEFAULT_TYPE, sta
                 return
             # 20 MB dan katta: MTProto orqali (bigfile.py) - 300 MB gacha
             await _edit_status(status_msg, f"Katta fayl ({size / 2**20:.0f} MB) yuklab olinmoqda...")
-            file_bytes = await bigfile.download(photo.file_id, BOT_TOKEN)
+            file_bytes = await bigfile.download(photo.file_id, BOT_TOKEN, size)
         else:
             file_bytes = await download_file(context.bot, photo.file_id, size)
         logger.info("Fayl yuklandi: %.0f KB", len(file_bytes) / 1024)

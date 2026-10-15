@@ -56,13 +56,42 @@ async def warm_up(token: str) -> None:
         logger.warning("MTProto oldindan ulanmadi: %s", exc)
 
 
-async def download(file_id: str, token: str) -> bytes:
-    """Bot API file_id bo'yicha faylni to'liq yuklab, bayt sifatida qaytaradi."""
+async def _reset() -> None:
+    """Ulanishni tashlaydi - keyingi chaqiruv yangisini ochadi."""
+    global _client
+    async with _lock:
+        client, _client = _client, None
+    if client is not None:
+        try:
+            await client.stop()
+        except Exception as exc:
+            logger.info("MTProto yopilmadi: %s", exc)
+
+
+# BO'SH FAYL (2026-10-16): MTProto ulanishi osilib qolsa download_media XATO BERMAY bo'sh (0 MB) yoki chala fayl
+# qaytarardi (21 MB lik PDF: "0.0 MB, 192 s") - bot uni PDF deb ochib "Data format error" bilan bobni yiqitardi
+# (2 kunda ~10 bob). Endi hajm tekshiriladi: chala bo'lsa ulanish yangilanib qayta uriniladi.
+TRIES = 3
+
+
+async def download(file_id: str, token: str, size: int = 0) -> bytes:
+    """Bot API file_id bo'yicha faylni to'liq yuklab, bayt sifatida qaytaradi (size - kutilgan hajm)."""
     import time
-    client = await _get(token)
-    t = time.time()
-    buf = await client.download_media(file_id, in_memory=True)
-    data = bytes(buf.getbuffer())
-    dt = max(time.time() - t, 0.01)
-    logger.info("Katta fayl yuklandi: %.1f MB, %.0f s (%.2f MB/s)", len(data) / 2**20, dt, len(data) / 2**20 / dt)
-    return data
+    data = b""
+    for attempt in range(1, TRIES + 1):
+        client = await _get(token)
+        t = time.time()
+        try:
+            buf = await client.download_media(file_id, in_memory=True)
+            data = bytes(buf.getbuffer()) if buf is not None else b""
+        except Exception as exc:
+            logger.warning("Katta fayl yuklanmadi (%d/%d): %s", attempt, TRIES, exc)
+            data = b""
+        dt = max(time.time() - t, 0.01)
+        logger.info("Katta fayl yuklandi: %.1f MB, %.0f s (%.2f MB/s)", len(data) / 2**20, dt, len(data) / 2**20 / dt)
+        if data and (not size or len(data) >= size):
+            return data
+        logger.warning("Katta fayl chala keldi (%d / %d bayt) - ulanish yangilanib qayta uriniladi", len(data), size)
+        await _reset()
+        await asyncio.sleep(3 * attempt)
+    raise ConnectionError(f"fayl to'liq yuklanmadi ({len(data)} / {size} bayt)")

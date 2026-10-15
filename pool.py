@@ -377,13 +377,31 @@ async def _step(bot, slots: int, execute, apply) -> None:
             await _refresh_state()
         except Exception as exc:
             log.warning("Umumiy holat yangilanmadi: %s", _short(exc))
-    if receiver and got.get("results"):
+    results = [r for r in got.get("results") or [] if _mine(r)] if receiver else []
+    if results:
         try:
-            await apply(bot, got["results"])
-            await _post("ack", json=[r["ref"] for r in got["results"]])
+            await apply(bot, results)
+            await _post("ack", json=[r["ref"] for r in results])
             kick()                          # yana natija bo'lishi mumkin
         except Exception as exc:
             log.warning("Natijalar yozilmadi: %s", _short(exc))
+
+
+# IKKI QABUL QILUVCHI (2026-10-16). Noutbukning interneti bir necha daqiqa uzilsa, GitHub runneri "yuqori daraja
+# yo'q" deb o'zi ham qabul qiluvchi bo'lib olardi (15-okt 13:27-13:37). Ikkalasi bir vaqtda natijalarni bo'lib olib,
+# har biri O'Z holat nusxasiga yozardi; keyin noutbuk o'z nusxasini darvozaga yozib, GitHub yozganini bosib ketardi.
+# Bob foydalanuvchiga yetib borgan, lekin buyurtma "Qabul qilindi"da qolib ketgan (2 kunda 24 ta), qaytarilgan hisob
+# va lug'at ham yo'qolishi mumkin edi. Endi natijani buyurtmani QABUL QILGAN runner yozadi; boshqasi faqat egasi
+# ORPHAN_AFTER soniya ichida olmasa (haqiqatan o'chgan bo'lsa) yozadi. Eski boblarda (egasi yozilmagan) - avvalgidek.
+ORPHAN_AFTER = int(os.getenv("POOL_ORPHAN_AFTER", "600"))
+
+
+def _mine(r: dict) -> bool:
+    owner = (r.get("data") or {}).get("owner")
+    if not owner or owner == ROLE:
+        return True
+    t = (r.get("result") or {}).get("t")
+    return not t or time.time() - float(t) > ORPHAN_AFTER
 
 
 _overflow_seen = {"t": 0.0}
@@ -439,6 +457,7 @@ async def _exec(bot, job: dict, execute) -> None:
         log.exception("%s: bob bajarilmadi", ref)
         result = {"ok": False, "why": _short(exc)}
     result["w"] = ROLE
+    result["t"] = int(time.time())          # qachon tugadi - egasiz natijani boshqa qabul qiluvchi olishi uchun (_mine)
     _unsent.append({"ref": ref, "result": result})
     _running.pop(ref, None)
     await _flush()
