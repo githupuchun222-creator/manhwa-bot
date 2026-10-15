@@ -728,14 +728,22 @@ async def on_file(update: Update, context) -> bool:
         await msg.reply_text(body, parse_mode="HTML", reply_markup=markup)
         return True
     doc = update.effective_message.document
+    if adm and adm[0] == "app" and admins.is_superadmin(uid) and not (doc and (doc.file_name or "").lower().endswith(".apk")):
+        await update.effective_message.reply_text("Bu .apk fayl emas. Ilovaning .apk faylini yuboring.\n"
+                                                  "Bekor qilish: /start")
+        return True
     if doc and (doc.file_name or "").lower().endswith(".apk"):
         # .apk tarjima qilinmaydi. Super admin yuborsa - "Ilovani yuklab olish" endi shu faylni beradi.
         if admins.is_superadmin(uid):
-            admins.put_app({"file_id": doc.file_id, "name": doc.file_name, "size": doc.file_size or 0})
+            context.user_data.pop("await_adm", None)
+            admins.put_app({"file_id": doc.file_id, "name": doc.file_name, "size": doc.file_size or 0,
+                            "at": time.time()})
+            _log(uid, f"yangi ilova yukladi: {doc.file_name}")
             await update.effective_message.reply_text(
                 f"✅ Ilova fayli yangilandi: <b>{html.escape(doc.file_name)}</b> "
                 f"({(doc.file_size or 0) // 2**20} MB).\n<b>{BTN_APP}</b> tugmasi endi shu faylni beradi.",
                 parse_mode="HTML")
+            await app_panel(update, context)
         else:
             await update.effective_message.reply_text("Bu ilova fayli - uni tarjima qilib bo‘lmaydi. "
                                                       "Bob uchun PDF, ZIP yoki rasm yuboring.")
@@ -1605,8 +1613,35 @@ async def admin_panel(update: Update, context, edit=False) -> None:
                  "m:do:paid"),
              _ib("👥 Adminlar", "m:do:admins")],
             [_ib("📝 Qoidalar", "m:qoidalar"), _ib("📜 Jurnal", "sh:alog")],
-            [_ib("⚠️ Xato ishlar", f"sh:aorders:{ST_FAIL}")],
+            [_ib("⚠️ Xato ishlar", f"sh:aorders:{ST_FAIL}"), _ib("📱 Ilova (APK)", "sh:aapp")],
             [_ib("🔄 Yangilash", "sh:apanel")]]
+    await _reply(update, text, InlineKeyboardMarkup(rows), edit)
+
+
+def _app_line(app: dict) -> str:
+    if not app:
+        return "—"
+    size = f" · {app['size'] // 2**20} MB" if app.get("size") else ""
+    when = f" · {_date(app['at'])}" if app.get("at") else ""
+    return f"<b>{html.escape(app.get('name') or 'ilova')}</b>{size}{when}"
+
+
+async def app_panel(update: Update, context, edit=False) -> None:
+    """📱 Ilova bo'limi: foydalanuvchilarga beriladigan APK ni ko'rish, almashtirish, qaytarish, e'lon qilish."""
+    if not admins.is_superadmin(update.effective_user.id):
+        return
+    cur, prev = admins.get_app(), admins.get_app_prev()
+    text = ("📱 <b>Ilova (APK)</b>\n\n"
+            f"Hozir beriladi: {_app_line(cur) if cur else _app_line(APP_DEFAULT) + ' (standart)'}\n"
+            + (f"Oldingi: {_app_line(prev)}\n" if prev else "")
+            + f"\nFoydalanuvchilar <b>{BTN_APP}</b> tugmasini bosganda shu fayl yuboriladi. "
+              "Yangi versiya uchun «Yangi APK yuklash»ni bosib, .apk faylni yuboring.")
+    rows = [[_ib("📤 Yangi APK yuklash", "sh:aappnew")],
+            [_ib("👁 O‘zimga yuborib ko‘rish", "sh:aapptest")]]
+    if prev:
+        rows.append([_ib("↩️ Oldingi versiyaga qaytarish", "sh:aappback")])
+    rows.append([_ib("📢 Yangi versiya haqida hammaga xabar", "sh:aappbc")])
+    rows.append([_ib("⬅️ Panel", "sh:apanel")])
     await _reply(update, text, InlineKeyboardMarkup(rows), edit)
 
 
@@ -1720,6 +1755,34 @@ async def admin_button(update: Update, context, parts: list[str]) -> None:
         context.user_data["await_adm"] = ("restore", parts[2])
         await update.effective_message.reply_text(
             f"🎁 {parts[2]} ga bepul bobni qaytarish sababi (jurnalga yoziladi):")
+    elif act == "aapp":                                  # 📱 ilova fayli boshqaruvi
+        await app_panel(update, context, edit=True)
+    elif act == "aappnew":
+        context.user_data["await_adm"] = ("app", "")
+        await update.effective_message.reply_text(
+            "📤 <b>Yangi ilova</b>\n\nYangi <b>.apk</b> faylni shu chatga yuboring (hujjat sifatida).\n"
+            f"Shundan keyin <b>{BTN_APP}</b> tugmasi hammaga shu faylni beradi.\n\nBekor qilish: /start",
+            parse_mode="HTML")
+    elif act == "aapptest":
+        await send_app(update, context)
+    elif act == "aappback":
+        app = admins.revert_app()
+        if not app:
+            await update.effective_message.reply_text("Oldingi versiya saqlanmagan.")
+            return
+        _log(uid, f"ilovani oldingi versiyaga qaytardi: {app.get('name', '')}")
+        await update.effective_message.reply_text(
+            f"↩️ Endi <b>{html.escape(app.get('name') or 'ilova')}</b> beriladi.", parse_mode="HTML")
+        await app_panel(update, context)
+    elif act == "aappbc":                                # yangi versiya haqida e'lon (fayl emas - matn)
+        app = admins.get_app() or APP_DEFAULT
+        text = (f"📱 Manhwa tarjima ilovasining yangi versiyasi chiqdi: {app.get('name', '')}\n\n"
+                f"Yangilash uchun pastdagi «{BTN_APP}» tugmasini bosing va faylni o‘rnating. "
+                "Saqlangan boblaringiz va hisobingiz o‘chmaydi.")
+        draft = broadcast.new_draft(text)
+        context.user_data["bcdraft"] = draft
+        body, markup = broadcast.draft_preview(draft)
+        await update.effective_message.reply_text(body, parse_mode="HTML", reply_markup=markup)
     elif act == "alog":
         log = _data().get("log", [])[-20:]
         lines = [f"{_date(e['t'])} · {e['by']} · {e.get('ref') or '-'} · {html.escape(e['a'])}" for e in reversed(log)]
@@ -1732,7 +1795,11 @@ async def _admin_text(update: Update, context, text: str) -> bool:
     kind, arg = context.user_data.pop("await_adm")
     if not admins.is_superadmin(uid):
         return False
-    if kind == "bcast":
+    if kind == "app":
+        context.user_data["await_adm"] = ("app", "")
+        await update.effective_message.reply_text("Matn emas - ilovaning <b>.apk</b> faylini yuboring.\n"
+                                                  "Bekor qilish: /start", parse_mode="HTML")
+    elif kind == "bcast":
         draft = broadcast.new_draft(text)
         context.user_data["bcdraft"] = draft
         body, markup = broadcast.draft_preview(draft)

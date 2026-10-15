@@ -558,7 +558,30 @@ def get_app() -> dict:
 def put_app(app: dict | None) -> None:
     data = _load()
     if app:
+        old = data.get("app")
+        if isinstance(old, dict) and old.get("file_id") != app.get("file_id"):
+            data["app_prev"] = old                 # admin paneldagi "Oldingi versiyaga qaytarish" uchun
         data["app"] = app
     else:
         data.pop("app", None)
     _save(data)
+
+
+def get_app_prev() -> dict:
+    prev = _load().get("app_prev")
+    return dict(prev) if isinstance(prev, dict) else {}
+
+
+def revert_app() -> dict:
+    """Joriy va oldingi ilova faylini almashtiradi. Qaytaradi: endi beriladigan fayl ({} - oldingisi yo'q)."""
+    data = _load()
+    prev, cur = data.get("app_prev"), data.get("app")
+    if not isinstance(prev, dict):
+        return {}
+    data["app"] = prev
+    if isinstance(cur, dict):
+        data["app_prev"] = cur
+    else:
+        data.pop("app_prev", None)
+    _save(data)
+    return dict(prev)
