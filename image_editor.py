@@ -204,6 +204,10 @@ def _flood_gradient(sub: np.ndarray, tbox: tuple[int, int, int, int],
     kernel = np.ones((21, 21), np.uint8)
     op = cv2.MORPH_CLOSE if sum(bg) / 3 > 110 else cv2.MORPH_OPEN
     closed = cv2.morphologyEx(gray, op, kernel)
+    # harfning oq/qora NUR halqasi (kontur) ham ingichka belgi: u qolsa halqa tarqalishni to'sib, hudud
+    # faqat matn qutisi kattaligida chiqardi va tarjima mayda yozilardi ("PROFESSOR DECULEIN", 2026-10-16)
+    closed = cv2.morphologyEx(closed, cv2.MORPH_OPEN if op == cv2.MORPH_CLOSE else cv2.MORPH_CLOSE,
+                              np.ones((9, 9), np.uint8))
     tx1, ty1, tx2, ty2 = tbox
     h, w = gray.shape
     tx1, ty1 = max(0, tx1), max(0, ty1)
@@ -216,6 +220,15 @@ def _flood_gradient(sub: np.ndarray, tbox: tuple[int, int, int, int],
     back = gray.copy()
     zy1, zy2, zx1, zx2 = max(0, ty1 - 8), min(h, ty2 + 8), max(0, tx1 - 10), min(w, tx2 + 10)
     back[zy1:zy2, zx1:zx2] = closed[zy1:zy2, zx1:zx2]
+    # Qalin oq kontur zonani butunlay oqartirsa (yopish uni fon deb oladi) - zona atrofdagi fon bilan
+    # mos kelmaydi va halqa tarqalishni to'sadi: zona atrofdan inpaint bilan to'ldiriladi.
+    ring = np.zeros_like(gray, bool)
+    ring[max(0, zy1 - 6):zy2 + 6, max(0, zx1 - 6):zx2 + 6] = True
+    ring[zy1:zy2, zx1:zx2] = False
+    if ring.any() and abs(float(np.median(back[zy1:zy2, zx1:zx2])) - float(np.median(gray[ring]))) > 25:
+        zmask = np.zeros_like(gray)
+        zmask[zy1:zy2, zx1:zx2] = 255
+        back = cv2.inpaint(gray, zmask, 3, cv2.INPAINT_TELEA)
     back = cv2.GaussianBlur(back, (5, 5), 0)          # tekstura/JPEG shovqini
     if FONT_STYLES:
         # Ingichka och kulrang kontur blur'dan keyin deyarli yo'qolib, tarqalish undan sizib
