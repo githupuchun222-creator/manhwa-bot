@@ -882,8 +882,25 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         except Exception:
             logger.warning("Tarixga yozilmadi", exc_info=True)
         # PDF/ZIP bob - ish hovuziga (bo'sh qurilma oladi); bitta rasm - shu yerda (tez)
-        if job.get("quick") and fkind != "img" and await shop.pool_quick(job):
+        if job.get("quick") and fkind != "img":
+            # "Qabul qilindi" darhol ketdi; hovuzga yozish fonda - aks holda keyingi fayl
+            # (handlerlar ketma-ket) oldingisining ~6 s kutishini kutib, javobsiz turardi
+            task = asyncio.create_task(_enqueue(job, ahead, user_id, pool_first=True))
+            _bg_tasks.add(task)
+            task.add_done_callback(_bg_tasks.discard)
             return
+    await _enqueue(job, ahead, user_id)
+
+
+_bg_tasks: set = set()
+
+
+async def _enqueue(job: dict, ahead: int, user_id: int, pool_first: bool = False) -> None:
+    try:
+        if pool_first and await shop.pool_quick(job):
+            return
+    except Exception:
+        logger.exception("Hovuzga qo'yib bo'lmadi - oddiy navbatga")
     _waiting.append(job)
     await _queue.put(job)
     logger.info("Navbatga qo'yildi: user=%s, oldinda=%d", user_id, ahead)
