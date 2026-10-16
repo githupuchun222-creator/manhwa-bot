@@ -1105,7 +1105,8 @@ async def run_pool_chapter(bot, job: dict) -> dict:
         if not pages:
             raise RuntimeError("sahifa topilmadi")
         pdf = B.pdf_utils.build_pdf(pages[:B.MAX_PDF_PAGES])
-        await B._process_pdf(None, ctx, pdf, status, chat_id=d["chat"], src_name=d["name"], ref=d["order"])
+        await B._process_pdf(None, ctx, pdf, status, chat_id=d["chat"], src_name=d["name"], ref=d["order"],
+                                rendered=_rendered(pages, d["files"]))
     except asyncio.CancelledError:
         raise
     except Exception as exc:
@@ -1486,6 +1487,12 @@ async def _inquiry(update: Update, context, text: str) -> None:
 
 
 # ------------------------------------------------------------------ bajarish (bot navbati)
+def _rendered(pages: list[bytes], files: list[dict]):
+    """Sof PDF bobda sahifalar tayyor JPEG - qayta chizilmaydi; ZIP/rasm eni normallashtirilishi kerak."""
+    ok = all(f["kind"] == "pdf" and not B.pdf_utils.is_zip(b"", f.get("name")) for f in files)
+    return pages[:B.MAX_PDF_PAGES] if ok else None
+
+
 async def _load_pages(context, files: list[dict]) -> list[bytes]:
     """Bitta bobning fayllarini yuklab, sahifalarga (JPEG) aylantiradi."""
     from PIL import Image
@@ -1537,7 +1544,8 @@ async def process_order(job: dict) -> None:
             if not pages:
                 raise RuntimeError("sahifa topilmadi")
             pdf = B.pdf_utils.build_pdf(pages[:B.MAX_PDF_PAGES])
-            await B._process_pdf(None, context, pdf, status, chat_id=o["uid"], src_name=name, ref=ref)
+            await B._process_pdf(None, context, pdf, status, chat_id=o["uid"], src_name=name, ref=ref,
+                                        rendered=_rendered(pages, group))
         except Exception:
             if n == 1:
                 raise

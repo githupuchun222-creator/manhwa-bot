@@ -1545,7 +1545,8 @@ async def _chapter_batch(pages, limit: int, budget: dict, status_msg, t0: float,
 
 async def _process_pdf(update: Update | None, context: ContextTypes.DEFAULT_TYPE,
                        pdf_bytes: bytes, status_msg, chat_id: int | None = None,
-                       src_name: str | None = None, ref: str | None = None) -> None:
+                       src_name: str | None = None, ref: str | None = None,
+                       rendered: list[bytes] | None = None) -> None:
     """PDF bobni to'liq tarjima qilib, BITTA PDF qilib qaytaradi (<= 50 MB).
 
     Avval har sahifa alohida rasm bo'lib yuborilardi - foydalanuvchi bitta
@@ -1572,7 +1573,10 @@ async def _process_pdf(update: Update | None, context: ContextTypes.DEFAULT_TYPE
     await _edit_status(status_msg, f"PDF qabul qilindi: {total} sahifa.\n"
                                    f"Hammasi tarjima qilinib, BITTA PDF bo'lib qaytadi.{note}")
 
-    pages = await asyncio.to_thread(lambda: list(pdf_utils.render_pages(pdf_bytes, limit)))
+    if rendered:      # buyurtma yo'li sahifalarni allaqachon JPEG qilgan - ikkinchi marta chizilmaydi
+        pages = [(i + 1, len(rendered), j) for i, j in enumerate(rendered[:limit])]
+    else:
+        pages = await asyncio.to_thread(lambda: list(pdf_utils.render_pages(pdf_bytes, limit)))
     if not pages:
         await status_msg.edit_text("PDF sahifalarini rasmga aylantirib bo'lmadi.")
         return
