@@ -151,6 +151,20 @@ _active: list[dict] = []                  # hozir bajarilayotgan ishlar
 _job_var: contextvars.ContextVar = contextvars.ContextVar("job", default=None)
 
 
+class JobCancelled(Exception):
+    """Foydalanuvchi ❌ Bekor qilish bosdi - ish sahifalar orasida to'xtatiladi."""
+
+
+def _check_cancel() -> None:
+    job = _job_var.get()
+    if job is not None and job.get("cancelled"):
+        raise JobCancelled()
+
+
+def _stop_markup(job_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Bekor qilish", callback_data=f"stop:{job_id}")]])
+
+
 MENU_BUTTON = "🏠 Menyu"
 
 
@@ -864,7 +878,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     job = {"update": update, "context": context, "user": user_id, "id": _job_counter["n"],
            "name": fname, "who": update.effective_user.full_name or str(user_id),
            "cancelled": False, "free": charged, "bal": bal_charged, "daily": daily,
-           "status": await msg.reply_text(text)}
+           "status": await msg.reply_text(text, reply_markup=_stop_markup(_job_counter["n"]))}
     # Tezkor yo'l ham tarixga tushadi (\U0001f4c2 Tarjimalarim) va natijasi saqlanadi
     if shop.ENABLED:
         okind = ("admin" if admins.is_admin(user_id) else "obuna" if admins.is_paid(user_id)
@@ -1314,7 +1328,12 @@ async def _worker_loop() -> None:
                 await shop.process_order(job)          # yuklash seansi (bir nechta fayl)
             else:
                 await _process_photo(job["update"], job["context"], job["status"])
+        except JobCancelled:
+            job["over"] = True
+            _refund(job)
+            await _edit_status(job["status"], "❌ Bekor qilindi - bu bob tarjima qilinmadi.")
         except Exception:
+            job["over"] = True
             logger.exception("Ish xatosi (user=%s)", job["user"])
             _refund(job)
             await _edit_status(job["status"], "\u26a0\ufe0f Kutilmagan xatolik - bu bob tarjima "
@@ -1373,6 +1392,35 @@ async def on_queue_button(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await _edit_status(job["status"], "❌ Bu ish navbatdan olib tashlandi.")
     await _refresh_positions()
     logger.info("Navbatdan bekor qilindi: %s (kim: %s)", job["name"], uid)
+
+
+async def on_stop_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Holat xabaridagi ❌ Bekor qilish: navbatdagi ishni olib tashlaydi, ishlayotganini to'xtatadi."""
+    query = update.callback_query
+    uid = query.from_user.id
+    job_id = int(query.data.split(":", 1)[1])
+    job = next((j for j in _waiting + _active if j["id"] == job_id), None)
+    if job is None:
+        await query.answer("Bu ish allaqachon tugagan.", show_alert=True)
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except TelegramError:
+            pass
+        return
+    if not (admins.is_superadmin(uid) or job["user"] == uid):
+        await query.answer("Faqat o'z ishingizni bekor qila olasiz.", show_alert=True)
+        return
+    job["cancelled"] = True
+    if job in _waiting:
+        _waiting.remove(job)
+        await query.answer("Bekor qilindi")
+        await _edit_status(job["status"], "❌ Bu ish bekor qilindi.")
+        await _refresh_positions()
+    else:
+        await query.answer("To'xtatilmoqda...")
+        job["over"] = True
+        await _edit_status(job["status"], "⏹ To'xtatilmoqda... (hozirgi sahifa tugagach)")
+    logger.info("Bekor qilindi (tugma): %s (kim: %s)", job["name"], uid)
 
 
 async def _refresh_positions() -> None:
@@ -1468,8 +1516,14 @@ async def _edit_status(status_msg, text: str, soft: bool = False) -> None:
         if flood_left(chat) > 0 or (soft and now - _status_at.get(chat, 0.0) < STATUS_GAP):
             return
         _status_at[chat] = now
+    job = _job_var.get()
+    live = (job is not None and job.get("status") is status_msg and not job.get("over")
+            and not job.get("delivered") and not job.get("cancelled"))
     try:
-        await status_msg.edit_text(text)
+        if live:
+            await status_msg.edit_text(text, reply_markup=_stop_markup(job["id"]))
+        else:
+            await status_msg.edit_text(text)
     except RetryAfter as exc:
         logger.warning("Telegram cheklovi (holat xabari, chat %s): %.0f sek - shu vaqtgacha tahrirlanmaydi",
                        chat, _note_flood(exc, chat))
@@ -1521,6 +1575,7 @@ async def _chapter_batch(pages, limit: int, budget: dict, status_msg, t0: float,
 
     async def read_one(idx: int, num: int, jpeg: bytes) -> None:
         async with page_sem, _ai_semaphore:
+            _check_cancel()
             try:
                 reads[idx] = await asyncio.to_thread(read_page, jpeg, "image/jpeg", budget)
             except TranslationError as exc:
@@ -1533,6 +1588,7 @@ async def _chapter_batch(pages, limit: int, budget: dict, status_msg, t0: float,
                                        f"({elapsed // 60}:{elapsed % 60:02d} o'tdi)", soft=True)
 
     await asyncio.gather(*(read_one(i, num, jpeg) for i, (num, _total, jpeg) in enumerate(pages)))
+    _check_cancel()
     await _edit_status(status_msg, "Butun bob tarjima qilinmoqda (AI)...")
     flat = []
     for page_no, read in enumerate(reads):
@@ -1554,6 +1610,7 @@ async def _chapter_batch(pages, limit: int, budget: dict, status_msg, t0: float,
         if not items:
             return jpeg
         async with sem:
+            _check_cancel()
             return await asyncio.to_thread(render_translation, jpeg, items, PDF_JPEG_QUALITY, report)
 
     out = await asyncio.gather(*(draw(jpeg, items) for (_, _, jpeg), items in zip(pages, per_page)))
@@ -1627,6 +1684,7 @@ async def _process_pdf(update: Update | None, context: ContextTypes.DEFAULT_TYPE
         out_pages, texts, failed = await _chapter_batch(pages, limit, budget, status_msg, t0, report)
     pending: list[asyncio.Task] = []
     for num, _total, jpeg in ([] if CHAPTER_BATCH else pages):
+        _check_cancel()
         elapsed = int(time.time() - t0)
         await _edit_status(status_msg, f"Tarjima qilinmoqda: {num}/{limit}-sahifa "
                                        f"({elapsed // 60}:{elapsed % 60:02d} o'tdi)", soft=True)
@@ -1967,6 +2025,7 @@ def _build_app(token: str) -> Application:
     # Qolgan hamma narsa (buyruqlardan tashqari) - jim qolmaslik uchun
     app.add_handler(MessageHandler(~filters.COMMAND, handle_other))
     app.add_handler(CallbackQueryHandler(on_queue_button, pattern=r"^qcancel:"))
+    app.add_handler(CallbackQueryHandler(on_stop_button, pattern=r"^stop:\d+$"))
     app.add_handler(CallbackQueryHandler(on_menu_button, pattern=r"^m:"))
     app.add_handler(CallbackQueryHandler(shop.on_button, pattern=r"^sh:"))
     app.add_handler(CallbackQueryHandler(broadcast.on_user_button, pattern=r"^bc:"))
