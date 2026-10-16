@@ -1114,7 +1114,7 @@ async def run_pool_chapter(bot, job: dict) -> dict:
     status = _StatusRef(bot, d["chat"], d["mid"])
     part = f" \u00b7 {d['i']}/{d['n']}-bob" if d["n"] > 1 else ""
     ctx = SimpleNamespace(bot=bot)
-    wjob = {"pool": True, "delivered": False, "user": d["uid"], "order": d["order"]}
+    wjob = {"pool": True, "delivered": False, "user": d["uid"], "order": d["order"], "ref": job["ref"]}
     sink: dict = {}
     t1, t2 = B._job_var.set(wjob), admins.GLOSS_SINK.set(sink)
     try:
@@ -1152,6 +1152,40 @@ async def run_pool_chapter(bot, job: dict) -> dict:
         B._job_var.reset(t1)
         admins.GLOSS_SINK.reset(t2)
     return {"ok": wjob["delivered"], "res": wjob.get("res"), "names": sink}
+
+
+TURN_WAIT = int(os.getenv("TURN_WAIT", "600"))     # tartib kutish chegarasi (s); 0 - o'chiq
+
+
+async def wait_turn(job: dict, status) -> None:
+    """Tartib bilan yetkazish (2026-10-16, foydalanuvchi: "men yuborgan tartibda jo'natsin"): hovuzda boblar
+    parallel bajariladi, tezrog'i oldin tugaydi. Shu foydalanuvchining OLDINGI boblari (hovuz navbatida
+    oldinroq turganlar) yuborilib bo'lguncha kutiladi. "tugadi" belgisi bob yuborilgandan KEYIN qo'yiladi,
+    shuning uchun "tugamagan" = "hali yetib bormagan". Osilib qolmasligi uchun eng ko'pi TURN_WAIT s."""
+    ref, uid = job.get("ref"), job.get("user")
+    if not TURN_WAIT or not ref or not pool.ready():
+        return
+    t0, told = time.time(), False
+    while time.time() - t0 < TURN_WAIT:
+        try:
+            rows = await pool._post("list")
+        except Exception:
+            return                          # darvoza javob bermasa - kutmaymiz, bob shu zahoti yuboriladi
+        ahead = False
+        for r in rows:
+            if r["ref"] == ref:
+                break
+            if r.get("uid") == uid and r.get("state") != "done":
+                ahead = True
+                break
+        if not ahead:
+            return
+        if not told:
+            told = True
+            await B._edit_status(status, "⏳ Tayyor - o‘zidan oldingi boblar yetib borishini kutmoqda "
+                                         "(tartib saqlanadi)...")
+        await asyncio.sleep(3)
+    logger.warning("%s: tartib kutish %d s da tugamadi - bob baribir yuboriladi", ref, TURN_WAIT)
 
 
 def _net_error(exc: Exception) -> bool:

@@ -1736,6 +1736,9 @@ async def _process_pdf(update: Update | None, context: ContextTypes.DEFAULT_TYPE
         if admins.is_admin(chat_id):
             caption += notes
 
+    wj = _job_var.get()
+    if wj and wj.get("pool"):               # hovuz boblari - foydalanuvchi yuborgan tartibda yetib borsin
+        await shop.wait_turn(wj, status_msg)
     await _edit_status(status_msg, "Yuborilmoqda...")
     for attempt in range(4):
         try:
