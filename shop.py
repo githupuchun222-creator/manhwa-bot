@@ -45,6 +45,7 @@ BTN_MINE = "📂 Tarjimalarim"
 BTN_PAY = ("💎 Obuna va paketlar" if admins.SUBS_TOO else
            "💰 Paket va balans" if admins.PACKS_ON else "💎 Obuna va limit")
 BTN_HELP = "💬 Yordam"
+BTN_CANCEL = "❌ Bekor qilish"
 BTN_APP = "📱 Ilovani yuklab olish"
 # Ilova APK'si Telegram'da yuklangan (2026-10-09, 1.6, 285 MB - bot 50 MB dan kattasini o'zi yuklay olmaydi),
 # bot uni tayyor nusxasidan (file_id) beradi. file_id faqat shu botda ishlaydi - sir emas. Yangi versiya:
@@ -68,7 +69,7 @@ LEGACY_BUTTONS = {
     "📂 Buyurtmalarim": BTN_MINE,
 }
 BTN_FREE, BTN_PRICE, BTN_CONTACT = BTN_PAY, BTN_PAY, BTN_HELP      # eski nomlar (moslik uchun)
-MENU_BUTTONS = {BTN_ORDER, BTN_MINE, BTN_PAY, BTN_HELP, BTN_APP, BTN_ADMIN} | set(LEGACY_BUTTONS)
+MENU_BUTTONS = {BTN_ORDER, BTN_MINE, BTN_PAY, BTN_HELP, BTN_APP, BTN_ADMIN, BTN_CANCEL} | set(LEGACY_BUTTONS)
 
 # Bir xil so'zlar (hamma ekranda bir xil ishlashi uchun)
 TXT_BACK, TXT_HOME, TXT_CANCEL = "⬅️ Orqaga", "🏠 Bosh menyu", "❌ Bekor qilish"
@@ -161,7 +162,8 @@ def main_keyboard(uid: int) -> ReplyKeyboardMarkup:
     """Doimiy pastki klaviatura: asosiy amal (tarjima) eng tepada va eng keng."""
     rows = [[KeyboardButton(BTN_ORDER)],
             [KeyboardButton(BTN_MINE), KeyboardButton(BTN_PAY)],
-            [KeyboardButton(BTN_APP), KeyboardButton(BTN_HELP)]]
+            [KeyboardButton(BTN_APP), KeyboardButton(BTN_HELP)],
+            [KeyboardButton(BTN_CANCEL)]]
     if admins.is_superadmin(uid):
         rows.append([KeyboardButton(BTN_ADMIN)])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True, is_persistent=True)
@@ -246,8 +248,8 @@ async def show_pay(update: Update, context, edit=False) -> None:
     uid = update.effective_user.id
     pages = B.MAX_PDF_PAGES if B else 75
     head = (f"{'💎 <b>Obuna va paketlar</b>' if admins.SUBS_TOO else '💰 <b>Paket va balans</b>'}\n\n"
-            f"Hisob birligi: <b>1 bob</b> = bitta yuborilgan bob (eng ko‘pi {pages} sahifa). "
-            "Sahifa yoki rasm soni alohida sanalmaydi.\n\n")
+            f"Hisob birligi: <b>1 bob</b> = bitta yuborilgan PDF/ZIP yoki albom (eng ko‘pi {pages} sahifa). "
+            "Sahifalar soni alohida sanalmaydi.\n\n")
     free = (f"🎁 Bepul: <b>{max(admins.FREE_CHAPTERS, admins.free_left(uid))} ta bob</b> - "
             + {"mavjud": f"{admins.free_left(uid)} tasi hali ishlatilmagan ✅", "band": "hozirgi bobda ishlatilmoqda ⏳"}.get(
                 trial_state(uid), "ishlatilgan") + "\n") if admins.FREE_CHAPTERS else ""
@@ -256,10 +258,10 @@ async def show_pay(update: Update, context, edit=False) -> None:
         body = (free + (f"💳 Obuna: <b>{_date(until)}</b> gacha\n" if until > time.time() else
                         "💳 Obuna: <b>faol emas</b>\n")
                 + f"💰 Balansingiz: <b>{admins.balance(uid)} ta bob</b>\n"
-                + f"\n♾ <b>Cheksiz obuna</b> (muddat davomida cheklovsiz):\n"
-                + (f"🔥 Kunlik: {B.SUB_DAY_PRICE} / {admins.SUB_DAY_DAYS} kun\n" if B.SUB_DAY_PRICE else "")
+                + "\n💎 <b>Obuna</b> (muddat davomida har bob uchun alohida to‘lamaysiz):\n"
+                + (f"⚡ Kunlik: {B.SUB_DAY_PRICE} / {admins.SUB_DAY_DAYS} kun\n" if B.SUB_DAY_PRICE else "")
                 + f"🔥 Haftalik: {_price(B.SUB_WEEK_PRICE, B.SUB_WEEK_OLD_PRICE)} / {admins.SUB_WEEK_DAYS} kun\n"
-                f"💳 Oylik: {_price(B.SUB_PRICE, B.SUB_OLD_PRICE)} / {admins.SUB_DAYS} kun\n"
+                f"💎 Oylik: {_price(B.SUB_PRICE, B.SUB_OLD_PRICE)} / {admins.SUB_DAYS} kun\n"
                 "\n📦 <b>Limitli paket</b> (muddatsiz, boblar tugaguncha):\n"
                 + admins.pack_block() + "\n"
                 "• Har tarjima qilingan bob balansdan bitta yechiladi\n"
@@ -284,7 +286,7 @@ async def show_pay(update: Update, context, edit=False) -> None:
                 f" / {admins.SUB_WEEK_DAYS} kun\n"
                 + f"💳 <b>Oylik obuna:</b> {_price(B.SUB_PRICE, B.SUB_OLD_PRICE)}"
                 f" / {admins.SUB_DAYS} kun\n"
-                "• Obuna muddatida cheklovsiz tarjima\n\n"
+                "• Obuna muddatida har bob uchun alohida to‘lamaysiz\n\n"
                 "<b>Faollashtirish:</b> adminga yozing, to‘lovdan keyin admin obunani yoqadi "
                 "(botda avtomatik to‘lov yo‘q).")
     limit = ""
@@ -309,6 +311,28 @@ async def show_contact(update: Update, context, edit=False) -> None:
     rows = [_contact_button()] if _owner() else []
     rows.append([_ib("📝 Buyurtma tafsilotlarini yuborish", "sh:inq")])
     await _reply(update, text, InlineKeyboardMarkup(rows), edit)
+
+
+async def show_cancel(update: Update, context, edit=False) -> None:
+    """❌ Bekor qilish: avval yig'ilayotgan fayllar, bo'lmasa navbatdagi (boshlanmagan) boblar."""
+    uid = update.effective_user.id
+    draft = _draft(uid)
+    if draft and draft.get("files"):
+        await _reply(update, f"❌ Bekor qilsam, yuborgan <b>{len(draft['files'])} ta faylingiz</b> "
+                     "o‘chadi (tarjima qilinmaydi, hisobdan hech narsa yechilmaydi).",
+                     InlineKeyboardMarkup([[_ib("🗑 Ha, bekor qilinsin", "sh:cancelyes")],
+                                           [_ib("⬅️ Yo‘q, davom etaman", "sh:resume")]]), edit)
+        return
+    queued = [o for o in user_orders(uid) if o["status"] == ST_QUEUED]
+    if not queued:
+        await _reply(update, "Bekor qilinadigan ish yo‘q ✅\n\n"
+                     "Tarjima allaqachon boshlangan bo‘lsa, uni to‘xtatib bo‘lmaydi - "
+                     "kerak bo‘lsa admin bilan bog‘laning.",
+                     InlineKeyboardMarkup([_contact_button()]) if _owner() else None, edit)
+        return
+    rows = [[_ib(f"❌ {o['ref']} · {_label(o)}"[:60], f"sh:ucancel:{o['ref']}")] for o in queued[:8]]
+    await _reply(update, "Qaysi buyurtmani bekor qilaylik? Hisobdan yechilgan bob qaytariladi.",
+                 InlineKeyboardMarkup(rows), edit)
 
 
 async def show_help(update: Update, context, edit=False) -> None:
@@ -683,6 +707,8 @@ async def on_text(update: Update, context) -> bool:
             await show_help(update, context)
         elif btn == BTN_APP:
             await send_app(update, context)
+        elif btn == BTN_CANCEL:
+            await show_cancel(update, context)
         elif btn == BTN_ADMIN:
             await admin_panel(update, context)
         return True

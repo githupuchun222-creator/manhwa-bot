@@ -973,7 +973,7 @@ def _sub_panel(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
             + (f"🔥 <b>Kunlik</b> - {SUB_DAY_PRICE} / {admins.SUB_DAY_DAYS} kun\n" if SUB_DAY_PRICE else "")
             + f"🔥 <b>Haftalik</b> - {oldw}{SUB_WEEK_PRICE} / {admins.SUB_WEEK_DAYS} kun\n"
             f"🔥 <b>Oylik</b> - {old}{SUB_PRICE} / {admins.SUB_DAYS} kun\n"
-            f"• Obuna muddati davomida cheklovsiz tarjima\n"
+            f"• Obuna muddati davomida har bob uchun alohida to'lamaysiz\n"
             f"• Obunani istalgan vaqt uzaytirish mumkin\n"
             + (f"\n📦 <b>Yoki bob paketi</b> (muddatsiz, boblar tugaguncha):\n{admins.pack_block()}\n"
                f"• Har tarjima qilingan bob balansdan bitta yechiladi\n"
@@ -1098,7 +1098,7 @@ async def _set_paid(context, target: int, grant: bool, query=None, message=None,
         try:
             await context.bot.send_message(
                 target, f"✅ To'lovingiz qabul qilindi! Obuna faol: {_date(until)} gacha.\n"
-                        "Endi botdan cheklovsiz foydalanishingiz mumkin - bobning PDF faylini yoki rasmlarini yuboring.")
+                        "Endi har bob uchun alohida to'lamasdan foydalanishingiz mumkin - bobning PDF faylini yoki rasmlarini yuboring.")
         except TelegramError:
             text += "\n(unga xabar yetib bormadi - u botga hali /start bosmagan bo'lishi mumkin)"
     else:
