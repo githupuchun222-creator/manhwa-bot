@@ -525,6 +525,14 @@ Rules:
 - Lines come from OCR and may contain typos or merged words (e.g. "nassaual" = "Nassau", "Well strengthen" = "We'll strengthen"): silently fix them.
 - Keep character and place names unchanged (only fix OCR typos in them).
 - Honorifics: "my lord" = "hazratim", "young master" = "yosh xo'jayin", "big brother/hyung" = "aka", "noona/big sister" = "opa", "butler" = "xizmatkor", "duke" = "gersog".
+- NEVER drop words of address or vocatives: "Aunt..." = "Xola...", "Uncle" = "Amaki", "Teacher" = "Ustoz", "Mom/Dad" = "Oyi/Dada",
+  "Sis" = "Opa/Singil" by who speaks, "Boss" = "Boshliq", "Senior" = "Senpay"; keep the addressee at the start/end as in the source.
+- OCR in ALL CAPS often swaps letters and glues words ("YOL"=YOU, "HLH?"=HUH?, "FOUNDIT", "GETTINGLATE", "MALETYPE"): first
+  reconstruct the intended English sentence, THEN translate it. If the sense is unclear, translate the plain literal meaning -
+  never invent slang or a different idea ("it's my first time" = "bu mening birinchi marta", not an unrelated phrase).
+- Hangul-only lines are Korean sound effects/mimetic words (e.g. 두리번 = looking around): give a short Uzbek mimetic word or
+  gerund ("alanglab"), NEVER an imperative or a sentence.
+- Every sentence of the source must be present in the translation; do not shorten a line by cutting a clause.
 - Keep ending punctuation (!, ?, ?!, ...) and stutter (C-clear -> Y-yo'l). Sound effects -> Uzbek onomatopoeia.
 - Never reorder or translate full names ("Diana de Vereccia" stays "Diana de Vereccia"); titles: marquis = markiz, count = graf, baron = baron, fiancee = qallig'im, fiance = kuyovim (one word, no extra words).
 - A line may start mid-sentence (continuing the previous bubble, e.g. "...and also, my fiancee."): keep it as a continuation, do not capitalize it into a new idea.
@@ -1168,5 +1176,22 @@ def translate_items(items: list[dict]) -> list[dict]:
             live.append(item)
     if live:
         for item, uz in zip(live, translate_many([it["original"] for it in live])):
-            item["uzbek"] = uz
+            # tovush asl holida qoladi: bo'sh "uzbek" - finish_page uni olib tashlaydi, rasmga tegilmaydi
+            item["uzbek"] = "" if _keep_moan(item["original"]) else uz
     return items
+
+
+# Ingrash/nafas tovushlari so'z emas: "Heueuk." -> "Hoy.", "RKEUEUT..!" -> "Rostdan ham...!" bo'lib chiqardi.
+_MOAN = re.compile(
+    r"h+a+h*|a+h+|o+h+|u+h+|e+h+|h+m+|m{2,}|h+n+g+h*|n+g+h*|u+g+h*|h+e+u+e*u*k*|"
+    r"[a-z]*(?:eu){2,}[a-z]*|[bcdfghjklmnpqrstvwxz]{4,}", re.IGNORECASE)
+
+
+def _keep_moan(original: str) -> str:
+    """Bitta so'zli tovush bo'lsa - asl yozuv saqlanadi (tinish belgilari tozalangan: '..!' -> '...!')."""
+    m = re.fullmatch(r"\W*([A-Za-z]{2,12})\W*?([.!?…]*)\W*", original.strip())
+    if not m or not _MOAN.fullmatch(m.group(1)):
+        return ""
+    tail = m.group(2)
+    tail = re.sub(r"\.{2,}|…", "...", tail) if "." in tail else tail
+    return m.group(1) + tail
