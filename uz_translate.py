@@ -477,7 +477,16 @@ if GEMINI_PROXY and not GEMINI_KEY:
 _GEMINI_BASE = GEMINI_PROXY or "https://generativelanguage.googleapis.com"
 
 
+# Bot rejimi (2026-10-17): GEMINI_PROXY_BOT_KEY bo'lsa so'rov ilova serveridagi kalitlarga x-bot-key bilan boradi;
+# GEMINI_PROXY_POOL ("a"/"b") - qaysi kalit to'plami; x-cache-key - bir xil so'rov (qayta urinish) Gemini'ga ikki marta ketmaydi.
+GEMINI_PROXY_BOT_KEY = os.getenv("GEMINI_PROXY_BOT_KEY", "")
+GEMINI_PROXY_POOL = os.getenv("GEMINI_PROXY_POOL", "")
+
+
 def _gemini_headers(key: str) -> dict:
+    if GEMINI_PROXY and GEMINI_PROXY_BOT_KEY:
+        return {"x-bot-key": GEMINI_PROXY_BOT_KEY, "x-key-pool": GEMINI_PROXY_POOL, "x-cache-key": "0" * 64,
+                "content-type": "application/json", "user-agent": "manhwa-bot/1.0"}
     if GEMINI_PROXY:
         return {"x-app-key": GEMINI_PROXY_KEY, "content-type": "application/json",
                 "user-agent": "manhwa-app/1.0"}
@@ -487,6 +496,8 @@ def _gemini_headers(key: str) -> dict:
 # Shuning uchun: bir nechta kalit (vergul bilan, har biri boshqa Google akkaunti/loyihasi)
 # va ko'proq model. Band (503) yoki limiti tugagan model vaqtincha chetlab o'tiladi.
 GEMINI_KEYS = [k.strip() for k in GEMINI_KEY.split(",") if k.strip()]
+if GEMINI_PROXY and GEMINI_PROXY_BOT_KEY:      # kalitlarni server tanlaydi (GEMINI_PROXY_POOL) - bir xil so'rovni takrorlamaymiz
+    GEMINI_KEYS = ["proxy"]
 GEMINI_MODELS = [m for m in os.getenv(
     "GEMINI_MODELS",
     # "model:fikrlash". 3.5-flash (lite emas) haqiqiy bobda jonliroq: "What are you talking
