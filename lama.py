@@ -111,7 +111,11 @@ def inpaint(arr: np.ndarray, box: tuple[int, int, int, int], mask: np.ndarray) -
         RX1, RX2 = max(0, mx1 - pad), min(W, min(mx2, starts[-1] + side) + pad)
         RY1, RY2 = max(0, my1 - pad), min(H, my2 + pad)
         full = np.zeros((RY2 - RY1, RX2 - RX1), bool)
-        full[y1 - RY1:y2 - RY1, x1 - RX1:x2 - RX1][mask] = True
+        # quti R* dan chiqib ketsa (yoki R* qutidan ichkarida bo'lsa) faqat kesishma olinadi - aks holda
+        # "boolean index did not match" bilan LaMa o'chib, sifatsiz eski usul ishlardi
+        ox1, oy1, ox2, oy2 = max(x1, RX1), max(y1, RY1), min(x2, RX2), min(y2, RY2)
+        if ox2 > ox1 and oy2 > oy1:
+            full[oy1 - RY1:oy2 - RY1, ox1 - RX1:ox2 - RX1] = mask[oy1 - y1:oy2 - y1, ox1 - x1:ox2 - x1]
         feather = cv2.GaussianBlur(
             cv2.dilate(full.astype(np.uint8), np.ones((5, 5), np.uint8)).astype(np.float32), (0, 0), 2.0)
         result = arr[RY1:RY2, RX1:RX2].astype(np.float32)
