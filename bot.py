@@ -146,6 +146,15 @@ _job_counter = {"n": 0}
 # tanlanganda hozir ishi bajarilmayotgan foydalanuvchi oldinga o'tadi - bitta odamning 30 ta fayli
 # boshqalarni kutdirib qo'ymaydi. 1 - avvalgi tartib (birma-bir navbat).
 PARALLEL_JOBS = max(1, int(os.getenv("PARALLEL_JOBS", "1")))
+CLEAN_STATUS = os.getenv("CLEAN_STATUS", "") == "1"     # bob yetgach "Tayyor" holat xabari o'chiriladi
+# KEY_AGENTS (2026-10-17): bir buyurtmadagi boblar shuncha agent bilan BIRGA ishlanadi, har agent o'z Gemini
+# kalitidan boshlaydi (uz_translate.use_key), bobni faqat bitta agent oladi (shop.process_order), natija esa
+# har doim yuborilgan TARTIBDA yetadi (_turn_var). 1 - eski ketma-ket tartib. Og'ir qismlar (OCR, chizish)
+# umumiy semaforlar bilan cheklangan - CPU/xotira KEY_AGENTS ga qarab oshmaydi.
+KEY_AGENTS = max(1, int(os.getenv("KEY_AGENTS", "1")))
+_chap_var: contextvars.ContextVar = contextvars.ContextVar("bob_holati", default=None)   # {"ok": yetdimi}
+_turn_var: contextvars.ContextVar = contextvars.ContextVar("bob_navbati", default=None)  # await qilinadi: oldingi bob yetguncha
+_draw_sem: asyncio.Semaphore | None = None
 _ai_semaphore = asyncio.Semaphore(PARALLEL_JOBS)
 _active: list[dict] = []                  # hozir bajarilayotgan ishlar
 _job_var: contextvars.ContextVar = contextvars.ContextVar("job", default=None)
@@ -701,7 +710,7 @@ async def _learn_from_file(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await _edit_status(status, f"🎓 {len(lines)} qator o‘qildi. Uslub tahlil qilinmoqda...")
         st = await asyncio.to_thread(uz_translate.learn_style, lines)
         if not st:
-            await _edit_status(status, "⚠️ AI hozir javob bermadi (limit yoki band). Birozdan keyin "
+            await _edit_status(status, "⚠️ AI hozir band. Birozdan keyin "
                                        "qayta urinib ko‘ring: /organish")
             return
         st["src"] = (doc.file_name or "namuna")[:80]
@@ -810,6 +819,14 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if shop.ENABLED and await shop.on_file(update, context):
         return
 
+    # Bir xil fayl qayta yuborilsa (javob kechikkanda foydalanuvchi takrorlaydi) - avvalgisi tugamaguncha o'tkazib yuboriladi
+    dup_key = (user_id, msg.document.file_unique_id) if msg.document else None
+    if dup_key and shop.ENABLED:
+        prev = shop.get_order(_recent_files.get(dup_key, ""))
+        if prev and prev["status"] in (shop.ST_QUEUED, shop.ST_WORK):
+            logger.info("DUBLIKAT o'tkazildi: user=%s, %s (%s)", user_id, msg.document.file_name, prev["ref"])
+            return
+
     # Fayl sifatida katta bo'lsa - navbatga qo'ymasdan darhol aytamiz
     photo = msg.photo[-1] if msg.photo else msg.document
     size = getattr(photo, "file_size", None) or 0
@@ -893,6 +910,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 [{"id": item.file_id, "mid": msg.message_id, "size": getattr(item, "file_size", 0) or 0,
                   "kind": fkind, "name": getattr(msg.document, "file_name", "") or ""}], okind)
             job["quick"] = True
+            if dup_key:
+                _recent_files[dup_key] = job["order"]
         except Exception:
             logger.warning("Tarixga yozilmadi", exc_info=True)
         # PDF/ZIP bob - ish hovuziga (bo'sh qurilma oladi); bitta rasm - shu yerda (tez)
@@ -907,6 +926,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 _bg_tasks: set = set()
+_recent_files: dict[tuple, str] = {}   # (foydalanuvchi, file_unique_id) -> buyurtma raqami; dublikatni aniqlash uchun
 
 
 async def _enqueue(job: dict, ahead: int, user_id: int, pool_first: bool = False) -> None:
@@ -937,7 +957,13 @@ def _pay_btn() -> str:
 
 
 def _owner_name() -> str:
-    return os.getenv("OWNER_USERNAME", "").lstrip("@")
+    """Yozishma tugmasi kimga ochiladi (CONTACT_USERNAME - admin; bo'lmasa egasi)."""
+    return (os.getenv("CONTACT_USERNAME", "Ibragimov_015") or os.getenv("OWNER_USERNAME", "")).lstrip("@")
+
+
+def _owner_line() -> str:
+    u = os.getenv("OWNER_USERNAME", "").lstrip("@")
+    return f"👑 Bot egasi: @{u}\n\n" if u else ""
 
 
 def _date(ts: float) -> str:
@@ -952,7 +978,7 @@ def _pack_panel(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
     status = (f"💰 Balansingiz: <b>{bal} ta bob</b>" if bal else
               f"🎁 Bepul boblar qoldi: <b>{left}</b> ta" if left else
               "🎁 Bepul bobingizdan foydalandingiz.")
-    text = ("💰 <b>Boblar paketi</b>\n\n"
+    text = ("💰 <b>Boblar paketi</b>\n\n" + _owner_line() +
             "Oylik obuna yo'q - to'lov faqat tarjima qilinadigan boblar soniga:\n"
             + admins.pack_block() + "\n\n"
             "• Paket muddatsiz: boblar tugaguncha ishlatasiz\n"
@@ -983,7 +1009,7 @@ def _sub_panel(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
     else:
         left = max(0, admins.FREE_CHAPTERS - admins.used_chapters(user_id))
         status = f"🎁 Bepul boblar qoldi: <b>{left}</b> ta."
-    text = (f"💳 <b>Obuna</b>\n\n"
+    text = (f"💳 <b>Obuna</b>\n\n" + _owner_line()
             + (f"🔥 <b>Kunlik</b> - {SUB_DAY_PRICE} / {admins.SUB_DAY_DAYS} kun\n" if SUB_DAY_PRICE else "")
             + f"🔥 <b>Haftalik</b> - {oldw}{SUB_WEEK_PRICE} / {admins.SUB_WEEK_DAYS} kun\n"
             f"🔥 <b>Oylik</b> - {old}{SUB_PRICE} / {admins.SUB_DAYS} kun\n"
@@ -1094,7 +1120,7 @@ async def _set_paid(context, target: int, grant: bool, query=None, message=None,
                     target, f"✅ To'lovingiz qabul qilindi! Hisobingizga <b>+{n} ta bob</b> "
                             f"qo'shildi.\n💰 Balansingiz: <b>{left} ta bob</b>.\n\n"
                             "Bobning PDF faylini yoki rasmlarini yuboring - har tarjima qilingan "
-                            "bob balansdan bitta yechiladi (muddat cheklovi yo'q).", parse_mode="HTML")
+                            "bob balansdan bitta yechiladi (paket muddatsiz).", parse_mode="HTML")
             except TelegramError:
                 text += "\n(unga xabar yetib bormadi - u botga hali /start bosmagan bo'lishi mumkin)"
         else:
@@ -1202,6 +1228,9 @@ async def paid_list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 def _mark_delivered(sent=None, caption: str = "") -> None:
     """Natija yetib bordi. Yuborilgan xabar berilsa - natija file_id tarixga saqlanadi:
     "\U0001f4e5 Natijani qayta yuborish" tarjimani qayta ishlatmaydi va hisobdan yechmaydi."""
+    chap = _chap_var.get()
+    if chap is not None:
+        chap["ok"] = True
     job = _job_var.get() or _current["job"]
     if job is None:
         return
@@ -1244,8 +1273,8 @@ _daily_groups: dict[int, str] = {}     # kunlik hisobga olingan albom (foydalanu
 
 
 def daily_limit_text() -> str:
-    return (f"⛔ Bugungi chegara tugadi: bir kunda eng ko'pi {admins.DAILY_LIMIT} ta bob.\n"
-            "Chegara har kuni Toshkent vaqti bilan 00:00 da yangilanadi - ertaga davom ettiring.")
+    return ("⛔ Bugun juda ko'p bob yubordingiz.\n"
+            "Ertaga (Toshkent vaqti bilan 00:00 dan keyin) davom ettiring.")
 
 
 def _refund(job: dict) -> None:
@@ -1342,6 +1371,11 @@ async def _worker_loop() -> None:
             if not job.get("delivered"):
                 _refund(job)            # natija yetib bormadi - bepul bob sarflanmaydi
             shop.finish_order(job)
+            if CLEAN_STATUS and job.get("delivered") and not job.get("over"):
+                try:                              # natija yetdi - holat paneli chatda qolmasin
+                    await job["status"].delete()
+                except Exception:
+                    pass
             _active.remove(job)
             _current["job"] = _active[-1] if _active else None
             _job_var.set(None)
@@ -1604,7 +1638,10 @@ async def _chapter_batch(pages, limit: int, budget: dict, status_msg, t0: float,
     # sahifa bir vaqtda chiziladi (jami ~8 ta sahifa - xotira to'lib ketmasin).
     # DRAW_PAGES (2026-10-11, telefon): PARALLEL_JOBS=1 da bu yerda 8 sahifa BIRGA chizilardi - telefonda
     # runner 4,1 GB ga yetib, Android Termux'ni kuniga 12 marta o'ldirgan (LOW_MEMORY), bob yarim yo'lda qolardi.
-    sem = asyncio.Semaphore(DRAW_PAGES or max(1, 8 // max(1, PARALLEL_JOBS)))
+    global _draw_sem
+    if _draw_sem is None:                 # umumiy: parallel boblar chizishni ko'paytirib yubormasin
+        _draw_sem = asyncio.Semaphore(DRAW_PAGES or max(1, 8 // max(1, PARALLEL_JOBS)))
+    sem = _draw_sem
 
     async def draw(jpeg: bytes, items: list[dict]) -> bytes:
         if not items:
@@ -1615,6 +1652,30 @@ async def _chapter_batch(pages, limit: int, budget: dict, status_msg, t0: float,
 
     out = await asyncio.gather(*(draw(jpeg, items) for (_, _, jpeg), items in zip(pages, per_page)))
     return list(out), sum(len(i) for i in per_page), failed
+
+
+# MUQOVA (2026-10-17): COVER_IMAGE berilsa - har bobning BOSHIGA va OXIRIGA shu rasm sahifa bo'lib qo'shiladi
+# (eni bob sahifasi enicha). Bo'sh bo'lsa hech narsa o'zgarmaydi.
+COVER_IMAGE = os.getenv("COVER_IMAGE", "")
+
+
+def _with_covers(pages: list[bytes]) -> list[bytes]:
+    path = COVER_IMAGE if os.path.isabs(COVER_IMAGE) else os.path.join(os.path.dirname(os.path.abspath(__file__)), COVER_IMAGE)
+    if not COVER_IMAGE or not pages or not os.path.exists(path):
+        return pages
+    try:
+        from PIL import Image as PILImage
+        with PILImage.open(io.BytesIO(pages[0])) as first:
+            width = first.width
+        with PILImage.open(path) as cov:
+            cov = cov.convert("RGB")
+            cov = cov.resize((width, round(cov.height * width / cov.width)), PILImage.LANCZOS)
+            buf = io.BytesIO()
+            cov.save(buf, "JPEG", quality=PDF_JPEG_QUALITY)
+        return [buf.getvalue(), *pages, buf.getvalue()]
+    except Exception:
+        logger.exception("Muqova qo'shilmadi - bob muqovasiz yuboriladi")
+        return pages
 
 
 async def _process_pdf(update: Update | None, context: ContextTypes.DEFAULT_TYPE,
@@ -1705,6 +1766,7 @@ async def _process_pdf(update: Update | None, context: ContextTypes.DEFAULT_TYPE
 
     await _edit_status(status_msg, "Natija tekshirilmoqda...")
     uz_translate.save_series()
+    out_pages = _with_covers(out_pages)
     fitted, size_note = await asyncio.to_thread(pdf_utils.fit_size, out_pages)
     result_pdf = await asyncio.to_thread(pdf_utils.build_pdf, fitted)
     _archive(job, "natija.pdf", result_pdf)
@@ -1724,7 +1786,7 @@ async def _process_pdf(update: Update | None, context: ContextTypes.DEFAULT_TYPE
         share = 100 * st["google"] // (st["ai"] + st["google"])
         if share >= 10:
             notes += (f"\n\u26a0\ufe0f Matnning {share}% i AI'siz (Google) tarjima qilindi - "
-                      "AI limiti tugagan yoki band bo'lgan.")
+                      "AI o'sha payt band bo'lgan.")
     if report.get("tiny"):
         notes += (f"\n\u26a0\ufe0f {report['tiny']} ta joyda matn pufakchaga sig'masdan juda "
                   "mayda chiqdi - o'sha sahifalarni tekshirib ko'ring.")
@@ -1736,6 +1798,10 @@ async def _process_pdf(update: Update | None, context: ContextTypes.DEFAULT_TYPE
         if admins.is_admin(chat_id):
             caption += notes
 
+    turn = _turn_var.get()
+    if turn:                                # parallel boblar: oldingi bob yetib bormaguncha yubormaymiz
+        await _edit_status(status_msg, "⏳ Tayyor - oldingi bob yetib borishini kutmoqda (tartib saqlanadi)...")
+        await turn()
     wj = _job_var.get()
     if wj and wj.get("pool"):               # hovuz boblari - foydalanuvchi yuborgan tartibda yetib borsin
         await shop.wait_turn(wj, status_msg)

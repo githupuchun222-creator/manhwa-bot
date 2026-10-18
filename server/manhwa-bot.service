@@ -1,0 +1,17 @@
+[Unit]
+Description=@manhwatarjima_bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/opt/manhwa-bot4
+EnvironmentFile=/opt/manhwa-bot4/server/bot.env
+Environment=PYTHONIOENCODING=utf-8
+ExecStart=/opt/manhwa-bot4/.venv/bin/python runner.py
+Restart=always
+RestartSec=5
+# xotira to'lsa butun serverni emas, faqat botni o'ldirsin
+OOMScoreAdjust=500
+
+[Install]
+WantedBy=multi-user.target

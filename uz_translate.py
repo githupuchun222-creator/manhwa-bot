@@ -99,6 +99,25 @@ def restore_punctuation(source: str, uzbek: str) -> str:
     return uzbek + tail
 
 
+def restore_numbers(source: str, uzbek: str) -> str:
+    """Tarjimada buzilgan raqam va belgilarni asl matndagidek qaytaradi.
+
+    2026-10-16 tahlil: "LV.15" -> "5-DARAJA", "30 seconds" -> "3 soniya", "x10" -> "10" (x tushgan),
+    "+256" -> "256". Raqamlar soni teng bo'lsa - o'rniga qo'yiladi; "x/×/+" old belgisi tiklanadi.
+    """
+    src_n = re.findall(r"\d+", source or "")
+    uz_n = re.findall(r"\d+", uzbek or "")
+    if not src_n or len(src_n) != len(uz_n):
+        return uzbek
+    it = iter(src_n)
+    out = re.sub(r"\d+", lambda m: next(it), uzbek)
+    # "x10", "×5", "+256" - belgi asl matnda bor, tarjimada yo'q bo'lsa qaytaramiz
+    for sign, num in re.findall(r"(?<![A-Za-z])([x×+])\s*(\d+)\b", source, flags=re.IGNORECASE):
+        if not re.search(r"[x×+]\s*" + num + r"\b", out, flags=re.IGNORECASE):
+            out = re.sub(r"(?<![\w+×])" + num + r"\b", sign.lower().replace("x", "×") + num, out, count=1)
+    return out
+
+
 def capitalize_first(source: str, uzbek: str) -> str:
     """Gap bosh harf bilan boshlansin (sinovda: "xayrli tong!", "uch yildan keyin").
 
@@ -232,6 +251,10 @@ def _split_glued(text: str) -> str:
 
 def _interjection(source: str) -> str | None:
     t = re.sub(r"\b([^\W\d_]{1,2})-(?=\1)", "", source or "", flags=re.I)
+    rep = re.fullmatch(r"\W*([A-Za-z]+)[,\s]+\1(\W*)", t, flags=re.I)      # "HEY, HEY." (tarjimasiz qolardi)
+    if rep and _INTERJ.get(rep.group(1).lower()):
+        w = _INTERJ[rep.group(1).lower()]
+        return f"{w}, {w.lower()}" + rep.group(2).strip()
     m = re.fullmatch(r"\W*([A-Za-z]+)(\W*)", t)
     if not m:
         return None
@@ -552,6 +575,17 @@ Rules:
 - NAMES must be IDENTICAL everywhere in the chapter: transliterate a name once (Latin, e.g. "JIMIN" -> "Jimin",
   "DUWON" -> "Duvon") and reuse exactly that spelling; never translate a name as a word, never drop part of it
   ("Kim Jimin" stays two words). If a list of names already used is given - copy those spellings exactly.
+- NUMBERS are sacred: copy every digit, level, quantity and sign exactly ("LV.15" stays 15, "30 seconds" stays 30,
+  "x10" / "+256" keep their x / +). Never drop a class or item name from a status window (e.g. "THIEF").
+- Never translate site, scanlation-group or brand names, URLs, or code/technical strings: return them unchanged.
+- Meaning traps: "X needs you" = "sizga X kerak / sizga muhtojmiz" (NEVER "siz keraksiz" - that means "you are useless");
+  "What's going on?" = "Nima bo'lyapti?" (not "Nima gaplar?"); "shaken" = "dovdirab qoldi", not "hayratga tushdi";
+  "ambush" = "pistirma" ("pistirmada kutib turibdi"); "then" at sentence start = "Unda" (never "Undami");
+  "your subordinates" = "qo'l ostingizdagilar"; "entity" = "mavjudot" (not "ob'ekt"); breathing/panting ("HAH...") is
+  "Hh..." or "Voh...", never laughter.
+- Use ONE term per concept across the chapter: monster = "maxluq", veteran player = "tajribali o'yinchi",
+  enchanter = "sehrgar", skill/ability names stay consistent.
+- A line that is already a plain interjection with no translation ("HEY, HEY.") must still be rendered in Uzbek ("Hoy, hoy.").
 Return ONLY a JSON object: {"lines": [exactly one Uzbek string per input line, same order],
 "names": {"<name as in the English source>": "<exact spelling you used>", ...}} ("names" lists every
 character/place/guild name in these lines; {} if none)."""
@@ -578,6 +612,14 @@ _shared_state = _State()                  # set_series chaqirilmagan (yakka rasm
 
 def _S() -> _State:
     return _state_var.get() or _shared_state
+
+
+# AGENT KALITI (2026-10-17): har parallel bob o'z Gemini kalitidan boshlaydi (bot.py KEY_AGENTS)
+_key_slot: contextvars.ContextVar = contextvars.ContextVar("gemini_kalit_agenti", default=None)
+
+
+def use_key(slot: int | None) -> None:
+    _key_slot.set(slot)
 
 
 # ISMLAR (2026-10-01, foydalanuvchi: "ism doim bir xil bo'lsin", "ismlarda xato"): bob davomida
@@ -882,6 +924,10 @@ def _gemini(english: list[str], drafts: list[str]) -> list[str] | None:
     # hamma modellari, u tugagach (hammasi dam olishda) - 2-kalit; navbat bilan so'raladi,
     # sekin javob bersa yoniga keyingisi qo'shiladi (GEMINI_HEDGE, ko'pi bilan GEMINI_RACE ta birga).
     candidates = [(k, key, spec) for k, key in enumerate(GEMINI_KEYS) for spec in GEMINI_MODELS]
+    slot = _key_slot.get()
+    if slot is not None and GEMINI_KEYS:
+        own = slot % len(GEMINI_KEYS)          # agent o'z kalitidan boshlaydi, tugasa qolganlariga o'tadi
+        candidates.sort(key=lambda c: c[0] != own)
     for attempt in range(2):
         pending = [c for c in candidates
                    if _cooldown.get((c[0], c[2].partition(":")[0]), 0) <= time.time()]
@@ -1162,7 +1208,7 @@ def translate_many(texts: list[str]) -> list[str]:
     for i, t in enumerate(norm):
         r = clean_uzbek(result[i] or "") or t
         if i in todo and result[i]:
-            r = capitalize_first(t, restore_punctuation(t, r))
+            r = capitalize_first(t, restore_punctuation(t, restore_numbers(t, r)))
             _cache[t] = r
         if r:
             r = apply_rules(r)

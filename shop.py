@@ -43,7 +43,7 @@ B = None                      # bot moduli (bot.py setup'da beradi) - navbat, ko
 BTN_ORDER = "📖 Tarjima boshlash"
 BTN_MINE = "📂 Tarjimalarim"
 BTN_PAY = ("💎 Obuna va paketlar" if admins.SUBS_TOO else
-           "💰 Paket va balans" if admins.PACKS_ON else "💎 Obuna va limit")
+           "💰 Paket va balans" if admins.PACKS_ON else "💎 Obuna")
 BTN_HELP = "💬 Yordam"
 BTN_CANCEL = "❌ Bekor qilish"
 BTN_APP = "📱 Ilovani yuklab olish"
@@ -147,11 +147,11 @@ def _price(now: str, old: str = "") -> str:
 def _trial_line(uid: int) -> str:
     st = trial_state(uid)
     if st == "paket":
-        return f"💰 Balansingiz: <b>{admins.balance(uid)} ta bob</b> (muddat cheklovi yo‘q)."
+        return f"💰 Balansingiz: <b>{admins.balance(uid)} ta bob</b> (muddatsiz)."
     if st == "cheksiz":
         until = admins.sub_until(uid)
         return (f"✅ Obuna faol: <b>{_date(until)}</b> gacha." if until > time.time()
-                else "✅ Siz admin - cheklov yo'q.")
+                else "✅ Siz adminsiz - hisobdan yechilmaydi.")
     return {"mavjud": "🎁 Bepul bob: <b>mavjud</b> ✅",
             "band": "🎁 Bepul bob: <b>band</b> - hozirgi buyurtmangizda ishlatilmoqda ⏳",
             "ishlatilgan": "🎁 Bepul bob: <b>ishlatilgan</b>"}[st]
@@ -178,7 +178,13 @@ def _ib(text: str, data: str) -> InlineKeyboardButton:
 
 
 def _owner() -> str:
-    return os.getenv("OWNER_USERNAME", "").lstrip("@")
+    """Yozishma tugmasi kimga ochiladi (CONTACT_USERNAME - admin; bo'lmasa egasi)."""
+    return (os.getenv("CONTACT_USERNAME", "Ibragimov_015") or os.getenv("OWNER_USERNAME", "")).lstrip("@")
+
+
+def _owner_line() -> str:
+    u = os.getenv("OWNER_USERNAME", "").lstrip("@")
+    return f"👑 Bot egasi: @{u}\n" if u else ""
 
 
 def _contact_button() -> list:
@@ -262,7 +268,7 @@ async def show_pay(update: Update, context, edit=False) -> None:
                 + (f"⚡ Kunlik: {B.SUB_DAY_PRICE} / {admins.SUB_DAY_DAYS} kun\n" if B.SUB_DAY_PRICE else "")
                 + f"🔥 Haftalik: {_price(B.SUB_WEEK_PRICE, B.SUB_WEEK_OLD_PRICE)} / {admins.SUB_WEEK_DAYS} kun\n"
                 f"💎 Oylik: {_price(B.SUB_PRICE, B.SUB_OLD_PRICE)} / {admins.SUB_DAYS} kun\n"
-                "\n📦 <b>Limitli paket</b> (muddatsiz, boblar tugaguncha):\n"
+                "\n📦 <b>Boblar paketi</b> (muddatsiz, boblar tugaguncha):\n"
                 + admins.pack_block() + "\n"
                 "• Har tarjima qilingan bob balansdan bitta yechiladi\n"
                 "• Ish bajarilmasa (xato/bekor) - bob qaytariladi\n"
@@ -289,20 +295,15 @@ async def show_pay(update: Update, context, edit=False) -> None:
                 "• Obuna muddatida har bob uchun alohida to‘lamaysiz\n\n"
                 "<b>Faollashtirish:</b> adminga yozing, to‘lovdan keyin admin obunani yoqadi "
                 "(botda avtomatik to‘lov yo‘q).")
-    limit = ""
-    if admins.DAILY_LIMIT and not admins.is_admin(uid):
-        limit = (f"\n\n⏰ Kunlik chegara: <b>{admins.DAILY_LIMIT}</b> bob "
-                 f"(bugun ishlatilgan: {admins.daily_used(uid)}). "
-                 "Chegara har kuni 00:00 da yangilanadi (Toshkent vaqti, UTC+5).")
     rows = [[_ib("✍️ Admin bilan bog‘lanish", "sh:contact")],
             [_ib("📝 So‘rov yuborish", "sh:inq")], _home_row()]
-    await _reply(update, head + body + limit + f"\n\nSizning ID: <code>{uid}</code>",
+    await _reply(update, head + body + f"\n\nSizning ID: <code>{uid}</code>",
                  InlineKeyboardMarkup(rows), edit)
 
 
 async def show_contact(update: Update, context, edit=False) -> None:
     uid = update.effective_user.id
-    text = ("✉️ <b>Admin bilan bog‘lanish</b>\n\n"
+    text = ("✉️ <b>Admin bilan bog‘lanish</b>\n\n" + _owner_line() +
             "Narx, muddat yoki obuna bo‘yicha adminga to‘g‘ridan-to‘g‘ri yozishingiz mumkin"
             + (f": @{_owner()}" if _owner() else "") + ".\n\n"
             "Yoki <b>📝 Buyurtma tafsilotlarini yuborish</b> tugmasi orqali so‘rov qoldiring - "
@@ -341,7 +342,7 @@ async def show_help(update: Update, context, edit=False) -> None:
     pages = B.MAX_PDF_PAGES if B else 75
     mb = (B.max_upload_bytes(uid) // 2**20) if B else 20
     pay = ("obuna yoki bob paketi (💎 Obuna va paketlar)" if admins.SUBS_TOO else
-           "paket balansi (💰 Paket va balans)" if admins.PACKS_ON else "obuna (💎 Obuna va limit)")
+           "paket balansi (💰 Paket va balans)" if admins.PACKS_ON else "obuna (💎 Obuna)")
     text = ("💬 <b>Yordam</b>\n\n"
             "1️⃣ <b>Qanday tarjima qilaman?</b> Bobni shu chatga yuboring - natija bitta "
             "PDF bo‘lib qaytadi. Bir nechta rasmni bitta bob qilish uchun "
@@ -593,7 +594,7 @@ def _charge_kind(uid: int) -> str | None:
 def _charge_line(uid: int) -> str:
     kind = _charge_kind(uid)
     if kind in ("admin", "obuna"):
-        return "cheklov yo\u2018q"
+        return "hisobdan yechilmaydi"
     if kind == "bepul":
         return f"bepul bobingiz ishlatiladi ({admins.free_left(uid)} ta qoldi)"
     if kind == "paket":
@@ -1001,7 +1002,7 @@ async def _start_job(update: Update, context, draft: dict, nonce: str) -> None:
                      f"{skipped} tasini keyingi buyurtmada yuboring.")
         else:
             note += (f"\n\u26a0\ufe0f Yana {skipped} ta bob hisobingizga sig\u2018madi - ular tarjima "
-                     "qilinmaydi (obuna yoki ertangi kunlik chegara bilan qayta yuboring).")
+                     "qilinmaydi (obuna yoki paket olib, qayta yuboring).")
     await _reply(update, f"\u2705 <b>{ref}</b> qabul qilindi: {len(order['files'])} ta fayl "
                  f"({_files_summary(order['files'])}).{note}\n\nHolatni shu yerda ko\u2018rsatib turaman.",
                  None, edit=True)
@@ -1039,6 +1040,10 @@ class _StatusRef:
 
     def __init__(self, bot, chat_id: int, message_id: int):
         self._bot, self.chat_id, self.message_id = bot, chat_id, message_id
+
+    async def delete(self) -> None:
+        if self.message_id:
+            await self._bot.delete_message(self.chat_id, self.message_id)
 
     async def edit_text(self, text: str, **kw):
         if not self.message_id:        # holat xabari yo'q (qayta navbatga qo'yilgan bob) - birinchi safar yaratiladi
@@ -1107,6 +1112,9 @@ async def pool_quick(job: dict) -> bool:
                                                   "bal": job.get("bal")}, status=job["status"])
 
 
+_key_busy: list[int] = []          # hozir ishlayotgan boblar egallagan Gemini kalit raqamlari
+
+
 async def run_pool_chapter(bot, job: dict) -> dict:
     """Hovuzdan olingan bitta bobni tarjima qilib yuboradi (istalgan runnerda)."""
     from types import SimpleNamespace
@@ -1117,6 +1125,16 @@ async def run_pool_chapter(bot, job: dict) -> dict:
     wjob = {"pool": True, "delivered": False, "user": d["uid"], "order": d["order"], "ref": job["ref"]}
     sink: dict = {}
     t1, t2 = B._job_var.set(wjob), admins.GLOSS_SINK.set(sink)
+    # Har bir bob o'z Gemini kalitidan boshlaydi: band bo'lmagan birinchi kalit (KEY_OFFSET - runnerlar kalitlarni
+    # bo'lishib olsin: GitHub asosiy 0, yordamchi 2, telefon 4 ...), hammasi band bo'lsa - o'zinikidan.
+    nk = len(B.uz_translate.GEMINI_KEYS)
+    slot = None
+    if nk > 1:
+        off = int(os.getenv("KEY_OFFSET", "0"))
+        order = [(off + j) % nk for j in range(nk)]
+        slot = next((k for k in order if k not in _key_busy), order[0])
+        _key_busy.append(slot)
+    t3 = B.uz_translate._key_slot.set(slot)
     try:
         # Chat uzoq cheklovda bo'lsa (bot.FLOOD_MAX) bob boshlanmaydi: natijani baribir yuborib bo'lmaydi.
         if B.flood_left(d["chat"]) > B.FLOOD_MAX:
@@ -1151,6 +1169,14 @@ async def run_pool_chapter(bot, job: dict) -> dict:
     finally:
         B._job_var.reset(t1)
         admins.GLOSS_SINK.reset(t2)
+        B.uz_translate._key_slot.reset(t3)
+        if slot is not None:
+            _key_busy.remove(slot)
+    if B.CLEAN_STATUS and wjob["delivered"]:
+        try:                                    # bob yetdi - uning holat paneli chatda qolmasin
+            await status.delete()
+        except Exception:
+            pass
     return {"ok": wjob["delivered"], "res": wjob.get("res"), "names": sink}
 
 
@@ -1582,24 +1608,33 @@ async def process_order(job: dict) -> None:
     _set_order(ref, status=ST_WORK, started=int(time.time()), by=ROLE, handoff=None)
     groups = _chapters(o["files"])
     n = len(groups)
-    done, failed = 0, []
-    for i, group in enumerate(groups, 1):
-        if HANDOFF["on"] and i > 1:
-            # yuqori daraja qaytdi: tugagan boblar shu yerda qoladi, qolganini o'sha davom ettiradi
-            child = _split_rest(o, groups, i - 1)
-            await B._edit_status(status, f"🧾 {ref}: {i - 1}/{n} bob tayyor. Qolgan {n - i + 1} tasi "
-                                         f"tezroq serverda davom etadi ({child}).")
-            n = i - 1
-            break
+    # PARALLEL BOBLAR (2026-10-17): KEY_AGENTS ta agent boblarni navbat bilan OLADI (har bobni faqat bitta agent),
+    # har agent o'z Gemini kalitidan boshlaydi; yetkazish esa doim yuborilgan tartibda (B._turn_var).
+    K = max(1, min(B.KEY_AGENTS, n))
+    turns = [asyncio.Event() for _ in groups]       # i-bob yetib bordi yoki bajarilmadi
+    ok: dict[int, bool] = {}
+    names: dict[int, str] = {}
+    nxt = {"i": 0, "stop": False}
+
+    async def run_one(idx: int, slot: int) -> None:
+        group, i = groups[idx], idx + 1
         first = group[0]
         if first.get("kind") in ("pdf", "zip") and first.get("name"):
             name = first["name"].rsplit(".", 1)[0]          # asl fayl nomi - natijada ham shu
         else:
             name = _label(o) + (f" ({i})" if n > 1 else "")
-        await B._edit_status(status, f"\U0001f9fe {ref}" + (f" \u00b7 {i}/{n}-bob" if n > 1 else "")
-                             + ": fayllar yuklab olinmoqda...")
-        job["delivered"] = False
+        names[idx] = name
+        chap = {"ok": False}
+        B._chap_var.set(chap)
+        B.uz_translate.use_key(slot if K > 1 else None)
+
+        async def my_turn() -> None:
+            if idx:
+                await turns[idx - 1].wait()
+        B._turn_var.set(my_turn if K > 1 else None)
         try:
+            await B._edit_status(status, f"🧾 {ref}" + (f" · {i}/{n}-bob" if n > 1 else "")
+                                 + ": fayllar yuklab olinmoqda...")
             pages = await _load_pages(context, group)
             if not pages:
                 raise RuntimeError("sahifa topilmadi")
@@ -1610,10 +1645,28 @@ async def process_order(job: dict) -> None:
             if n == 1:
                 raise
             logger.exception("%s: %d/%d-bob bajarilmadi", ref, i, n)
-        if job.get("delivered"):
-            done += 1
-        else:
-            failed.append(name)
+        finally:
+            ok[idx] = chap["ok"]
+            turns[idx].set()                    # keyingi bob endi yuborilishi mumkin (bu yetdi yoki yiqildi)
+
+    async def agent(slot: int) -> None:
+        nonlocal n
+        while not nxt["stop"] and nxt["i"] < n:
+            idx = nxt["i"]
+            if HANDOFF["on"] and idx > 0:
+                # yuqori daraja qaytdi: boshlangan boblar shu yerda qoladi, qolganini o'sha davom ettiradi
+                child = _split_rest(o, groups, idx)
+                await B._edit_status(status, f"🧾 {ref}: {idx}/{n} bob qabul qilindi. Qolgan {n - idx} tasi "
+                                             f"tezroq serverda davom etadi ({child}).")
+                n = idx
+                nxt["stop"] = True
+                break
+            nxt["i"] += 1                       # bob shu agentniki - boshqasi ololmaydi
+            await run_one(idx, slot)
+
+    await asyncio.gather(*(agent(s) for s in range(K)))
+    done = sum(1 for v in ok.values() if v)
+    failed = [names[i] for i in sorted(ok) if not ok[i]]
     job["delivered"] = done > 0
     if n > 1 and failed:
         # Yetib bormagan boblar hisobdan qaytariladi. Hech biri yetmagan bo'lsa bittasini

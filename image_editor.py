@@ -69,6 +69,8 @@ STYLE_FONTS = {
     "art": _FONTS_DIR / "ShantellSans-BoldItalic.ttf",
     "system": _FONTS_DIR / "PTSansNarrow-Bold.ttf",
 }
+# Foydalanuvchi namunasi (2026-10-18): hamma yozuv bitta shriftda (Digital Strip) - "0" bo'lsa uslublar qaytadi
+FONT_UNIFORM = os.getenv("FONT_UNIFORM", "1") == "1"
 _style = threading.local()       # hozir chizilayotgan matn uslubi (sahifalar parallel bo'lishi mumkin)
 
 
@@ -93,6 +95,8 @@ def _load_font(size: int) -> ImageFont.FreeTypeFont:
 
 @lru_cache(maxsize=256)
 def _load_font_style(size: int, style: str) -> ImageFont.FreeTypeFont:
+    if FONT_UNIFORM:
+        style = "speech"
     if style in STYLE_FONTS:
         try:
             return ImageFont.truetype(str(STYLE_FONTS[style]), size)
@@ -1148,6 +1152,8 @@ def _draw_in_shape(draw, shape, text_box, text: str, color, max_size: int | None
         if not got:
             continue
         font, lines, spans, top, lh = got
+        if FONT_STYLES and max_size and font.size < 0.55 * start:
+            return False                  # shakl juda tor - asl yozuv qutisiga sig'diriladi (mayda yozuv o'rniga)
         if near and len(lines) >= 3:
             # zinapoya ("BU / SAFAR / SIZDA BUTUN"): qator pufakchaning TOR joyiga tushgani uchun kalta.
             # Uzun so'z sig'magani uchun kalta qolgan qator (tabiiy o'ralish) bunga kirmaydi.
@@ -1329,7 +1335,6 @@ def _fill_masked(arr: np.ndarray, box: tuple[int, int, int, int], mask: np.ndarr
     for dy, dx in ((-mh, 0), (mh, 0), (0, -mh), (0, mh), (-2 * mh, 0), (2 * mh, 0), (0, -2 * mh), (0, 2 * mh)):
         if not need.any():
             break
-        src = np.zeros_like(need)
         ys, xs = np.nonzero(need)
         sy, sx = ys + dy, xs + dx
         inb = (sy >= 0) & (sy < hh) & (sx >= 0) & (sx < ww)
@@ -1704,6 +1709,28 @@ TILT_MIN, TILT_MAX = 4.5, 30.0
 TILT_STEEP = 20.0   # bundan qiyaroq yozuvda pufakcha to'ldirilmaydi, faqat harflar o'chiriladi
 
 
+def _widen_in_shape(shape, tbox) -> tuple[int, int, int, int]:
+    """Asl yozuv qutisi, shakl (oyna/ramka) ruxsat bergan joygacha ENIGA kengaytiriladi.
+
+    Tarjima odatda asl yozuvdan uzun: tor yorliqda ("CHALLENGE SUCCESSFUL") ikki qatorga bo'linib
+    ikki baravar mayda chiqardi. Balandligi o'zgarmaydi, eni shakl ichida 10 px qoldirib kengayadi."""
+    if shape is None:
+        return tbox
+    ox, oy, fill = shape
+    cy = min(max(int((tbox[1] + tbox[3]) / 2) - oy, 0), fill.shape[0] - 1)
+    cx = min(max(int((tbox[0] + tbox[2]) / 2) - ox, 0), fill.shape[1] - 1)
+    row = fill[cy]
+    if not row[cx]:
+        return tbox
+    a = b = cx
+    while a > 0 and row[a - 1]:
+        a -= 1
+    while b + 1 < row.size and row[b + 1]:
+        b += 1
+    m = 10
+    return (min(tbox[0], ox + a + m), tbox[1], max(tbox[2], ox + b - m), tbox[3])
+
+
 def _draw_job(out: Image.Image, draw, job, off: tuple[int, int]) -> None:
     """Bitta ishni chizadi. off - draw ning out ga nisbatan siljishi (qiya chizish qatlami uchun)."""
     ox, oy = off
@@ -1726,7 +1753,13 @@ def _draw_job(out: Image.Image, draw, job, off: tuple[int, int]) -> None:
         if shape is None or not _draw_in_shape(draw, shape, tbox, text, color, extra):
             # Shaklga joylay olmadik - pufakcha ichiga KAFOLATLI sig'adigan quti
             inside = _inscribed_box(shape, tbox) if FONT_STYLES else None
-            _draw_block(draw, inside or box, text, color, max_size=extra)
+            # Tor ramkada (tizim oynasi yorlig'i) kafolatli quti asl yozuvdan ancha past chiqadi va
+            # tarjima 2x mayda yozilardi ("MANBA MOHIYATI +1", "SINOV YAKUNLANDI" 2026-10-16).
+            # Asl yozuv shu qutida turgan - undan tor quti kerak emas.
+            cand = inside or box
+            if (cand[3] - cand[1]) < 0.75 * (tbox[3] - tbox[1]):
+                cand = _widen_in_shape(shape, tbox)
+            _draw_block(draw, cand, text, color, max_size=extra)
     elif mode == "flat":
         _draw_block(draw, box, text, _text_color_for(bg_color), max_size=extra)
     elif mode == "system":

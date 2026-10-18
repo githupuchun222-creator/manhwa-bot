@@ -407,6 +407,8 @@ def read_page(image_bytes: bytes, media_type: str = "image/jpeg",
 
     # Bitta pufakchaning qatorlarini qo'shamiz (OCR ularni alohida beradi)
     result = merge_lines(result, image)
+    for it in result:
+        it["original"] = fix_ocr_digits(it.get("original", ""))
     # Skanlatsiya suv belgilari/reklama tarjima qilinmaydi va tegilmaydi
     # (haqiqiy bobda "ASURASCANS.COM" "tarjima" qilinib, ustiga dog' tushgan edi)
     dropped = [it for it in result if _is_watermark(it.get("original", ""))]
@@ -428,6 +430,27 @@ def read_page(image_bytes: bytes, media_type: str = "image/jpeg",
     return result
 
 
+_DIGITISH = {"I": "1", "l": "1", "O": "0", "o": "0", "D": "0", "S": "5", "B": "8"}
+
+
+def fix_ocr_digits(text: str) -> str:
+    """OCR raqamni harf deb o'qigan joyni tuzatadi: "LVI5" -> "LV.15", "1D MINUTES" -> "10 MINUTES".
+
+    2026-10-16 tahlil: daraja va miqdor noto'g'ri o'qilgach tarjima ham xato chiqardi ("LV.5", "1 daqiqa").
+    Faqat kamida bitta HAQIQIY raqam bor so'zlar o'zgaradi - oddiy so'zlarga ("IS", "SO") tegilmaydi.
+    """
+    def digits(m: re.Match) -> str:
+        w = m.group(0)
+        if not re.search(r"\d", w):
+            return w
+        return "".join(_DIGITISH.get(c, c) for c in w)
+
+    text = re.sub(r"\b(LV|LVL)\.?\s*([0-9IlOoDSB]{1,3})\b",
+                  lambda m: f"{m.group(1)}.{digits(re.match(r'.*', m.group(2)))}"
+                  if re.search(r"\d", m.group(2)) or m.group(2) in ("I", "l") else m.group(0), text)
+    return re.sub(r"\b[0-9IlOoDSB]{2,4}\b", digits, text)
+
+
 _WATERMARK = re.compile(
     r"(https?://|www\.|\.(com|net|org|io|gg|me|xyz|to|cc|co|site|online|club|app)\b"
     # "\w+scans" - guruh nomlari (asurascans, flamescans); oddiy "scan" so'zi dialogda bo'ladi
@@ -437,10 +460,42 @@ _WATERMARK = re.compile(
 )
 
 
+# Sayt menyusi, ogohlantirish/birlashish e'loni, guruh logotiplari (2026-10-16 tahlil: "WARNING!",
+# "Overview Chapters...", "NIGHT SCANS ...", "EON COMICS", "QI MANGA" tarjima qilinib, buzilgan edi).
+# Dialogda uchramaydigan qat'iy iboralar; "scans"/"comics" faqat bosh harfli nom ko'rinishida.
+_UI_JUNK = re.compile(
+    r"overview\s+chapters|more\s+like\s+this|fastest\s+updates|new\s+comics|active\s+community"
+    r"|reader\s+that\s+does\s+not\s+support|has\s+been\s+detected|merger\s+announcement|big\s+news"
+    r"|read\s+only\s+at|reach\s+out|please\s+support\s+us|we\s+are\s+waiting\s+(for\s+)?you"
+    r"|\b[A-Z][A-Za-z]+\s+Scans\b|\b[A-Z]{2,}\s+SCANS\b|\b[A-Z][A-Za-z]+\s+Comics\b|\b[A-Z]{2,}\s+COMICS\b"
+    r"|\bQI\s*MANGA\b|^manh(wa|ua)\w{0,5}\.*$|^mgeko"
+    # rasmdagi dastur kodi (2026-10-16: "Content-Type, text/HTML", "DEPAGE=936 %>" buzilib chiqqan edi)
+    r"|<%|%>|=\s*(true|false)\b|=\s*\"|content-?type|\.response|\w\(\)|text/html"
+    # OCR chiqindisi logotipdan: harf+raqam aralash uzun "so'z" ("OIMANG13") - tarjima qilinmaydi
+    r"|\b[A-Za-z]{4,}\d{2}\b",
+    re.IGNORECASE)
+
+
 def _is_watermark(text: str) -> bool:
     """Skanlatsiya guruhi nomi, sayt manzili, reklama - tarjima qilinmaydi."""
     t = re.sub(r"\s+", " ", text or "").strip()
-    return bool(t) and bool(_WATERMARK.search(t) or _PROMO.search(t) or _site_mark(t))
+    return bool(t) and bool(_WATERMARK.search(t) or _PROMO.search(t) or _site_mark(t)
+                            or _ui_junk(t))
+
+
+def _ui_junk(t: str) -> bool:
+    # qisqa logotip: "Eon comics", "Oi Scans" (bosh harfli nom + comics/scans/manga/toon, boshqa so'z yo'q)
+    if re.fullmatch(r"\W*[A-Z][A-Za-z]+\s+(comics|scans|manga|toons?)\W*", t, flags=re.IGNORECASE) \
+            and t.strip()[0].isupper() and t.split()[0] not in ("The", "My", "His", "Her", "Our", "Your", "It", "He", "She", "We", "I"):
+        return True
+    # IGNORECASE faqat qat'iy iboralar uchun; "Xxx Scans" bosh harf talabi esa case-sensitive
+    for m in _UI_JUNK.finditer(t):
+        s = m.group(0)
+        if (re.search(r"(?i)\b(scans|comics)$", s) and not s.split()[-1][0].isupper()
+                and not re.match(r"(?i)new\s+comics", s)):
+            continue                     # "he scans" - oddiy fe'l, nom emas
+        return True
+    return False
 
 
 _SITE_WORD = re.compile(r"manga|manhwa|manhua|webtoon|baozi|comic|scan", re.IGNORECASE)
