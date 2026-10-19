@@ -12,6 +12,7 @@ Ikki nozik joyi bor (sinovda ko'rilgan nuqsonlar shu yerda tuzatilgan):
    HAQIQIY o'lchanadi va so'z hech qachon bo'linmaydi.
 """
 
+import io
 import logging
 import math
 import os
@@ -2098,6 +2099,30 @@ def render_translation(image_bytes: bytes, translations: list[dict], quality: in
         except Exception:
             logger.exception("Tik yozuv chizilmadi (%r) - o'tkazib yuborildi", vbox)
     return encode_jpeg(out, quality=quality)
+
+
+def add_mark(jpeg: bytes, text: str, quality: int = 88) -> bytes:
+    """Bot manzili sahifa chetiga (o'ng tomon, o'rtada, tik) rasm PIKSELLARIGA yoziladi (2026-10-19, egasi:
+    "chetrog'ida linki tursin, o'chirib bo'lmaydigan"). Bo'sh hoshiyada emas, rasm ustida turadi - kesib tashlansa
+    rasm ham kesiladi. Yarim shaffof oq yozuv qora kontur bilan: har qanday fonda o'qiladi, manhwani to'smaydi."""
+    with Image.open(io.BytesIO(jpeg)) as im:
+        page = im.convert("RGB")
+    W, H = page.size
+    size = max(14, int(W * 0.03))
+    font = ImageFont.truetype(str(_FONTS_DIR / "Montserrat-Bold.ttf"), size)
+    pad = max(2, size // 8)
+    probe = ImageDraw.Draw(page).textbbox((0, 0), text, font=font, stroke_width=pad)
+    tw, th = probe[2] - probe[0], probe[3] - probe[1]
+    layer = Image.new("RGBA", (tw + 2 * pad, th + 2 * pad), (0, 0, 0, 0))
+    ImageDraw.Draw(layer).text((pad - probe[0], pad - probe[1]), text, font=font,
+                               fill=(255, 255, 255, 170), stroke_width=pad, stroke_fill=(0, 0, 0, 150))
+    layer = layer.rotate(90, expand=True)              # pastdan yuqoriga o'qiladi
+    if layer.height > H * 0.9:                         # juda past sahifa - joylashmaydi, tegilmaydi
+        return jpeg
+    x = W - layer.width - max(4, int(W * 0.012))
+    y = (H - layer.height) // 2
+    page.paste(layer, (x, y), layer)
+    return encode_jpeg(page, quality=quality)
 
 
 def _draw_vertical(out: Image.Image, box, text: str, ink) -> None:

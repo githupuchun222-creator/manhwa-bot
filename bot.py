@@ -28,7 +28,7 @@ import broadcast
 import pdf_utils
 import uz_translate
 from config import BASE_DIR, BOT_SUFFIX, BOT_TOKEN, OWNER_ID
-from image_editor import render_translation
+from image_editor import add_mark, render_translation
 from translator import TranslationError, finish_page, read_page, translate_page
 
 LOG_DIR = BASE_DIR / "logs"
@@ -126,6 +126,8 @@ MAX_PHOTO_BYTES = 10 * 1024 * 1024
 MAX_PDF_PAGES = int(os.getenv("MAX_PDF_PAGES", "75"))
 # Natija PDF sahifalari uchun JPEG sifati (50 MB ga sig'maslik ehtimoli kamroq)
 PDF_JPEG_QUALITY = 88
+# Har ikkinchi sahifa chetiga yoziladigan bot manzili (2026-10-19, egasi so'rovi); bo'sh - yozilmaydi
+PAGE_MARK = os.getenv("PAGE_MARK", "@manhwatarjima_bot")
 # Bitta PDF bob uchun sekin zaxira AI necha marta ishlashi mumkin (har biri ~90 sek)
 VLM_BUDGET_PER_PDF = int(os.getenv("VLM_BUDGET_PER_PDF", "2"))
 
@@ -1771,6 +1773,10 @@ async def _process_pdf(update: Update | None, context: ContextTypes.DEFAULT_TYPE
 
     await _edit_status(status_msg, "Natija tekshirilmoqda...")
     uz_translate.save_series()
+    if PAGE_MARK:                        # har ikkinchi sahifa chetida bot manzili (o'chirib bo'lmaydi - rasm ichida)
+        out_pages = await asyncio.to_thread(
+            lambda: [add_mark(p, PAGE_MARK, PDF_JPEG_QUALITY) if i % 2 else p
+                     for i, p in enumerate(out_pages)])
     out_pages = _with_covers(out_pages)
     fitted, size_note = await asyncio.to_thread(pdf_utils.fit_size, out_pages)
     result_pdf = await asyncio.to_thread(pdf_utils.build_pdf, fitted)
@@ -1803,6 +1809,7 @@ async def _process_pdf(update: Update | None, context: ContextTypes.DEFAULT_TYPE
         if admins.is_admin(chat_id):
             caption += notes
 
+    t_ready = time.time()                   # yuborish kechikishini o'lchash: tartib kutish va yuklash alohida (2026-10-19)
     turn = _turn_var.get()
     if turn:                                # parallel boblar: oldingi bob yetib bormaguncha yubormaymiz
         await _edit_status(status_msg, "⏳ Tayyor - oldingi bob yetib borishini kutmoqda (tartib saqlanadi)...")
@@ -1811,6 +1818,7 @@ async def _process_pdf(update: Update | None, context: ContextTypes.DEFAULT_TYPE
     if wj and wj.get("pool"):               # hovuz boblari - foydalanuvchi yuborgan tartibda yetib borsin
         await shop.wait_turn(wj, status_msg)
     await _edit_status(status_msg, "Yuborilmoqda...")
+    t_send = time.time()
     for attempt in range(4):
         try:
             sent = await context.bot.send_document(
@@ -1828,6 +1836,8 @@ async def _process_pdf(update: Update | None, context: ContextTypes.DEFAULT_TYPE
             await asyncio.sleep(_flood_wait(exc, chat_id) + 1)
     else:
         raise TelegramError("Telegram faylni qabul qilmadi (ko'p urinishdan keyin)")
+    logger.info("Yuborish: tartib kutish %.1f s, yuklash %.1f s (%.1f MB)",
+                t_send - t_ready, time.time() - t_send, len(result_pdf) / 2**20)
     await _edit_status(status_msg, "Tayyor ✅")
     logger.info("PDF yuborildi: %d sahifa, %.1f MB, %d sek",
                 limit, len(result_pdf) / 1024 / 1024, elapsed)
