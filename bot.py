@@ -99,7 +99,7 @@ async def download_file(tg_bot, file_id: str, size: int = 0) -> bytes:
 
 def max_upload_bytes(uid: int) -> int:
     big = bigfile.MAX_BIG_BYTES if bigfile.enabled() else MAX_DOWNLOAD_BYTES
-    if admins.FREE_CHAPTERS and not admins.is_admin(uid) and not admins.is_paying(uid):
+    if admins.FREE_CHAPTERS and not admins.free_use(uid) and not admins.is_paying(uid):
         return min(big, TRIAL_MAX_BYTES)
     return big
 
@@ -226,7 +226,7 @@ def _screen(name: str, user_id: int) -> tuple[str, InlineKeyboardMarkup]:
             "• Bir nechta fayl - navbat bilan birma-bir\n"
             "• Bitta bob odatda 1.5-3 daqiqa"
             + (f"\n\n🎁 Bepul: {admins.FREE_CHAPTERS} ta bob (bitta PDF yoki birga yuborilgan rasmlar albomi)."
-               if admins.FREE_CHAPTERS and not admins.is_admin(user_id) else "")),
+               if admins.FREE_CHAPTERS and not admins.free_use(user_id) else "")),
             InlineKeyboardMarkup([[_btn("📋 Navbatni ko'rish", "m:do:navbat")], back]))
     if name == "qoidalar":
         rules = admins.list_rules()
@@ -286,7 +286,7 @@ def _screen(name: str, user_id: int) -> tuple[str, InlineKeyboardMarkup]:
         rows.append([_btn("👑 Adminlar", "m:admins")]
                     + ([_btn(_pay_btn(), "m:do:paid")] if admins.FREE_CHAPTERS or admins.PACKS_ON else []))
     status = ""
-    if (admins.PACKS_ON and not admins.is_admin(user_id)
+    if (admins.PACKS_ON and not admins.free_use(user_id)
             and not (admins.SUBS_TOO and admins.is_paid(user_id))):
         bal = admins.balance(user_id)
         left = admins.free_left(user_id)
@@ -297,7 +297,7 @@ def _screen(name: str, user_id: int) -> tuple[str, InlineKeyboardMarkup]:
                       "rasmlarini (albom qilib) yuboring.")
         else:
             status = "\n\n🎁 Bepul bobingizdan foydalandingiz. Davom etish uchun - 💰 Boblar paketi."
-    elif admins.FREE_CHAPTERS and not admins.is_admin(user_id):
+    elif admins.FREE_CHAPTERS and not admins.free_use(user_id):
         until = admins.sub_until(user_id)
         left = max(0, admins.FREE_CHAPTERS - admins.used_chapters(user_id))
         if until > time.time():
@@ -838,7 +838,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # 2026-10-19: chegara FAQAT obunaga; obuna limiti tugagach paket balansidan yechiladi (over), paket cheklanmaydi
     daily = False
     over = admins.sub_over_daily(user_id)
-    if admins.DAILY_LIMIT and admins.is_paid(user_id) and not admins.is_admin(user_id):
+    if admins.DAILY_LIMIT and admins.is_paid(user_id) and not admins.free_use(user_id):
         group = msg.media_group_id
         if not (group and _daily_groups.get(user_id) == group):
             if admins.daily_blocked(user_id):
@@ -853,7 +853,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # Bepul cheklov: oddiy foydalanuvchiga FREE_CHAPTERS ta bob. Bitta bob = bitta PDF
     # yoki bitta albom (birga yuborilgan rasmlar, media_group_id bir xil) yoki bitta rasm.
     charged = bal_charged = False
-    if ((admins.FREE_CHAPTERS or admins.PACKS_ON) and not admins.is_admin(user_id)
+    if ((admins.FREE_CHAPTERS or admins.PACKS_ON) and not admins.free_use(user_id)
             and (not admins.is_paid(user_id) or over)):
         group = msg.media_group_id
         if not (group and _free_groups.get(user_id) == group):
@@ -901,7 +901,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
            "status": await msg.reply_text(text, reply_markup=_stop_markup(_job_counter["n"]))}
     # Tezkor yo'l ham tarixga tushadi (\U0001f4c2 Tarjimalarim) va natijasi saqlanadi
     if shop.ENABLED:
-        okind = ("admin" if admins.is_admin(user_id) else "obuna" if admins.is_paid(user_id)
+        okind = ("admin" if admins.free_use(user_id) else "obuna" if admins.is_paid(user_id)
                  else "bepul" if charged else "paket" if bal_charged else "admin")
         item = msg.photo[-1] if msg.photo else msg.document
         fkind = "pdf" if (msg.document and "pdf" in ((msg.document.mime_type or "") + (msg.document.file_name or "")).lower()) \

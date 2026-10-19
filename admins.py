@@ -199,6 +199,12 @@ def is_owner(user_id: int) -> bool:
     return user_id == OWNER_ID
 
 
+def free_use(user_id: int) -> bool:
+    """Tarjima hisobdan yechilmaydi va cheklanmaydi - FAQAT bot egasi (2026-10-19, foydalanuvchi: "admin cheksiz
+    tarjima qilmasin, ega qilsin"). Adminlar boshqaruv huquqini saqlaydi, tarjimani esa obuna/paket bilan qiladi."""
+    return is_owner(user_id)
+
+
 def is_superadmin(user_id: int) -> bool:
     """Super admin: adminlarni boshqaradi, navbatdagi istalgan ishni bekor qiladi.
 
@@ -448,7 +454,7 @@ def add_daily(user_id: int, delta: int = 1) -> int:
 # faqat obuna hisobidan ketgan boblar yoziladi. Paket boblari cheklanmaydi (har biri uchun to'langan); obunachi
 # chegaraga yetsa, paket balansi bo'lsa o'shandan davom etadi, bo'lmasa paket taklif qilinadi.
 def sub_over_daily(user_id: int) -> bool:
-    return bool(DAILY_LIMIT) and not is_admin(user_id) and is_paid(user_id) and daily_used(user_id) >= DAILY_LIMIT
+    return bool(DAILY_LIMIT) and not free_use(user_id) and is_paid(user_id) and daily_used(user_id) >= DAILY_LIMIT
 
 
 def daily_blocked(user_id: int) -> bool:

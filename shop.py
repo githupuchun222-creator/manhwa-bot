@@ -129,7 +129,7 @@ def user_orders(uid: int) -> list[dict]:
 
 def trial_state(uid: int) -> str:
     """'mavjud' | 'band' | 'ishlatilgan' | 'paket' (balansi bor) | 'cheksiz' (admin/obunachi)."""
-    if admins.is_admin(uid) or admins.is_paid(uid):
+    if admins.free_use(uid) or admins.is_paid(uid):
         return "cheksiz"
     if admins.PACKS_ON and admins.free_left(uid) <= 0 and admins.balance(uid) > 0:
         return "paket"
@@ -167,8 +167,8 @@ def _trial_line(uid: int) -> str:
         return f"💰 Balansingiz: <b>{admins.balance(uid)} ta bob</b> (muddatsiz)."
     if st == "cheksiz":
         until = admins.sub_until(uid)
-        if until <= time.time() or admins.is_admin(uid):
-            return "✅ Siz adminsiz - hisobdan yechilmaydi."
+        if until <= time.time() or admins.free_use(uid):
+            return "✅ Siz bot egasisiz - hisobdan yechilmaydi."
         return f"✅ Obuna faol: <b>{_date(until)}</b> gacha.\n" + _sub_usage_line(uid)
     return {"mavjud": "🎁 Bepul bob: <b>mavjud</b> ✅",
             "band": "🎁 Bepul bob: <b>band</b> - hozirgi buyurtmangizda ishlatilmoqda ⏳",
@@ -628,7 +628,7 @@ def _charge_kind(uid: int) -> str | None:
     Tartib eski qoidalar bilan bir xil: admin va obunachi cheklanmaydi, keyin bepul bob,
     keyin paket balansi. Hech biri bo'lmasa - None (tarjima boshlanmaydi).
     """
-    if admins.is_admin(uid):
+    if admins.free_use(uid):
         return "admin"
     if admins.is_paid(uid) and not admins.sub_over_daily(uid):
         return "obuna"                       # kunlik obuna chegarasi tugagan bo'lsa - paket balansiga o'tadi
