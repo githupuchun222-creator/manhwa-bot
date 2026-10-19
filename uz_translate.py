@@ -555,6 +555,8 @@ Translate each speech bubble into natural, lively, CONVERSATIONAL Uzbek (Latin s
 Rules:
 - Translate the MEANING and emotion the way Uzbek people really talk, never word-for-word.
 - Keep it short: it must fit in a speech bubble. Do not add anything that is not in the source.
+  Uzbek runs ~20% longer than English, so pick the SHORTEST natural wording: aim for at most ~1.1x the characters of the
+  source line, use compact synonyms and drop filler ("axir", "ya'ni", "mana") - but never drop a clause or a name.
 - Use the whole list as context: lines are consecutive bubbles of the same page/scene.
 - Lines come from OCR and may contain typos or merged words (e.g. "nassaual" = "Nassau", "Well strengthen" = "We'll strengthen"): silently fix them.
 - Keep character and place names unchanged (only fix OCR typos in them).

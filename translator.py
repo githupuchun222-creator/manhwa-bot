@@ -527,6 +527,9 @@ def _site_mark(t: str) -> bool:
 
 # Reklama/titr jumlalari ("HELP US WITH DONATIONS", "WE ARE RECRUITING")
 _PROMO = re.compile(r"donat(e|ion)|recruit|consider\s+(support|donat)|support\s+us\b"
+                    # sayt reklamasi (2026-10-18, dragontea): tarjima qilinsa havola buzilardi ("KD-FI.COMIDRAGONTEA")
+                    r"|ko-?fi|dragon\s*tea|read\s+(it\s+first|the\s+full\s+chapter|more\s+chapters)\b"
+                    r"|release\s+faster|\bbuy\s+raw\b|discord\.gg"
                     r"|\bnch\s+(software|photo)|photo\s*pad|trial\s+version", re.IGNORECASE)
 _CREDIT_ROLE = re.compile(
     r"(?i)(staff|credits?|tlc?|rd|ed|pr|ts|qc|cl|rp|translator|translation|proofreader|proofreading"

@@ -1145,6 +1145,11 @@ def _draw_in_shape(draw, shape, text_box, text: str, color, max_size: int | None
             pad = int((tx2 - tx1) * 0.08)
             mask[:, :max(0, tx1 - ox - pad)] = False
             mask[:, max(0, tx2 - ox + pad):] = False
+            # Balandligi ham asl yozuvdan +45% dan oshmasin: shakl sahifadagi oq maydonga "sizib" chiqqan bo'lsa
+            # uzun tarjima bubbledan tashqariga qatorlab toshardi (2026-10-18 skrinshot) - o'rniga shrift kichrayadi.
+            vpad = int((ty2 - ty1) * 0.45)
+            mask[:max(0, ty1 - oy - vpad), :] = False
+            mask[max(0, ty2 - oy + vpad):, :] = False
         if not mask.any():
             continue
         cx, cy = (tx1 + tx2) // 2 - ox, (ty1 + ty2) // 2 - oy
@@ -1304,9 +1309,13 @@ def _fill_masked(arr: np.ndarray, box: tuple[int, int, int, int], mask: np.ndarr
 
     H, W = arr.shape[:2]
     x1, y1, x2, y2 = box
-    if margin:                                # katta blokka kengroq kontekst kerak
-        margin = max(margin, int(0.6 * max(x2 - x1, y2 - y1)))
-    X1, Y1, X2, Y2 = max(0, x1 - margin), max(0, y1 - margin), min(W, x2 + margin), min(H, y2 + margin)
+    mx = my = margin
+    if margin:                                # katta blokka kengroq kontekst kerak - HAR O'QDA o'z o'lchamiga qarab
+        # (2026-10-18: keng past yozuvda tepa-past kontekst ham 0.6*eni olinib, yaqindagi qora tasma fonni
+        # qoraytirib, yozuv o'rnida qora dog' qolardi)
+        mx = max(margin, int(0.6 * (x2 - x1)))
+        my = max(margin, int(0.6 * (y2 - y1)))
+    X1, Y1, X2, Y2 = max(0, x1 - mx), max(0, y1 - my), min(W, x2 + mx), min(H, y2 + my)
     ctx = arr[Y1:Y2, X1:X2].astype(np.float32)
     m = np.zeros(ctx.shape[:2], bool)
     m[y1 - Y1:y2 - Y1, x1 - X1:x2 - X1] = mask
@@ -1381,7 +1390,7 @@ def _textured(arr: np.ndarray, region) -> bool:
     return float(np.concatenate(resid).std()) > 6.0
 
 
-def _lama_rect(arr: np.ndarray, box, region, grow: float, letters=None) -> bool:
+def _lama_rect(arr: np.ndarray, box, region, grow: float, letters=None, force: bool = False) -> bool:
     """Asl matn qutisini (grow ulushga kengaytirib) LaMa bilan qayta chizadi. False - model yo'q.
 
     letters (bool niqob, region o'lchamida) berilsa - quti ichidagi FAQAT harflar o'chiriladi.
@@ -1395,7 +1404,7 @@ def _lama_rect(arr: np.ndarray, box, region, grow: float, letters=None) -> bool:
 
         if not lama.available():
             return False
-        if letters is not None and not _textured(arr, region):
+        if letters is not None and not force and not _textured(arr, region):
             return False          # tekis fon: tez to'ldirish toza chiqadi, LaMa'ga vaqt sarflanmaydi
         x1, y1, x2, y2 = region
         ob = [int(v) for v in box]
@@ -1462,6 +1471,11 @@ def _inpaint_text(arr: np.ndarray, box: tuple[int, int, int, int],
         r = max(6, int(pad * 1.2))
         near = cv2.dilate((mask > 0).astype(np.uint8), np.ones((2 * r + 1, 2 * r + 1), np.uint8)) > 0
         mask = np.maximum(mask, (((lum > base + 20) & near).astype(np.uint8) * 255))
+        # Och harfning QORA konturi/soyasi ham harf yaqinida olinadi (2026-10-18: "ISMIM ZHANG ZE" ostida qora
+        # dog' qolgan edi - kontur fondan qorong'i, shuning uchun nur qoidasiga kirmasdi)
+        r2 = max(3, int(pad * 0.5))
+        near2 = cv2.dilate((mask > 0).astype(np.uint8), np.ones((2 * r2 + 1, 2 * r2 + 1), np.uint8)) > 0
+        mask = np.maximum(mask, (((lum < base - 18) & near2).astype(np.uint8) * 255))
     try:
         import cv2
 
@@ -1469,7 +1483,12 @@ def _inpaint_text(arr: np.ndarray, box: tuple[int, int, int, int],
             mask = cv2.dilate(mask, np.ones((3, 3), np.uint8), iterations=4)
             # Bu yo'lga rasm ustidagi oq hikoya matni ham tushadi - xiralashtirib to'ldirish u yerda
             # kulrang yamoq qoldirardi (foydalanuvchi skrinshotlari, 2026-10-02). LaMa bo'lsa - u bilan.
-            if not _lama_rect(arr, box, (x1, y1, x2, y2), 0.14, None if solid else mask > 0):
+            # Kuchli o'tishli (yorug' chiziq kesib o'tgan) qorong'i fonda tekis to'ldirish yorug'lik chizig'ini
+            # davom ettirolmay qora dog' qoldirardi (2026-10-18) - shunda LaMa majburan ishlatiladi
+            lum_r = region.astype(np.float32) @ np.array([0.299, 0.587, 0.114], np.float32)
+            ring_v = np.concatenate([lum_r[0], lum_r[-1], lum_r[:, 0], lum_r[:, -1]])
+            strong = float(np.percentile(ring_v, 90) - np.percentile(ring_v, 10)) > 30
+            if not _lama_rect(arr, box, (x1, y1, x2, y2), 0.14, None if solid else mask > 0, force=strong):
                 _fill_masked(arr, (x1, y1, x2, y2), mask > 0)
             return (x1 + pad - 6, y1 + pad - 6, x2 - pad + 6, y2 - pad + 6)
 
@@ -1501,7 +1520,9 @@ def _inpaint_text(arr: np.ndarray, box: tuple[int, int, int, int],
             # (foydalanuvchi skrinshotlari, 2026-10-02) - LaMa o'sha joyni rasmga mos qayta chizadi.
             # Niqob - asl matn qutisi (ozgina kengaytirilgan): harf qoldig'i qolmasligi kafolatlanadi.
             if not _lama_rect(arr, box, (x1, y1, x2, y2), 0.06, None if solid else mask > 0):
-                _fill_masked(arr, (x1, y1, x2, y2), mask > 0)
+                # Qora konturli oq harf qorong'i fonda: kontur va soyasi niqobdan tashqarida qolib, yozuv ostida
+                # qora dog' bo'lardi (2026-10-18, "ISMIM ZHANG ZE") - tekis to'ldirishda niqob yana 3 px kengayadi
+                _fill_masked(arr, (x1, y1, x2, y2), cv2.dilate(mask, np.ones((3, 3), np.uint8), iterations=3) > 0)
             return (x1, y1, x2, y2)
         fixed = cv2.inpaint(np.ascontiguousarray(region[:, :, ::-1]), mask, 4, cv2.INPAINT_TELEA)
         arr[y1:y2, x1:x2] = fixed[:, :, ::-1]
@@ -1841,6 +1862,7 @@ def render_translation(image_bytes: bytes, translations: list[dict], quality: in
         key=lambda it: (float(it["bbox"][1]), float(it["bbox"][0])),
     )
     jobs = []
+    vjobs = []                            # tik yozuvlar (box, matn, rang): oxirida buriladigan qatlamda chiziladi
     tboxes = []                           # jobs bilan bir xil tartibda: asl matn qutilari
     for item in ordered:
         bbox = item.get("bbox")
@@ -1871,6 +1893,20 @@ def render_translation(image_bytes: bytes, translations: list[dict], quality: in
         if FONT_STYLES and _foreign_sfx(item.get("original") or ""):
             # "두" -> "IKKI", "찰방" -> "SHAMPAN": tovush so'z deb tarjima qilinardi (foydalanuvchi
             # skrinshotlari) - qisqa ingliz bo'lmagan yozuv joyida, tarjimasiz qoladi.
+            continue
+        if FONT_STYLES and line_h and (y2 - y1) > 2.2 * (x2 - x1) and float(line_h) > 0.7 * (y2 - y1) \
+                and len(uzbek_text) >= 3:
+            # TIK YOZUV (2026-10-18, "CHINA TIAN FENG CITY"): bitta uzun tik qator tor qutiga qatorlab
+            # o'ralib "TIANF-/ENGCIT" bo'lib qolardi. Endi tik chiziladi: matn tekis yoziladi va 90 daraja buriladi.
+            area = _inpaint_text(arr, box)
+            vjobs.append((box, uzbek_text, _art_ink(arr, box)))
+            continue
+        if (FONT_STYLES and line_h and 2.0 <= abs(angle) <= 25.0 and (y2 - y1) > 2.2 * float(line_h)
+                and len((item.get("original") or "").split()) <= 3):
+            # EGRI YOZUV (aylana bo'ylab "danger danger", 2026-10-18): OCR bitta qatorni juda baland qiya quti qiladi.
+            # To'rtburchak o'chirish aylana/belgini buzib tashlardi, tekis yozuv esa egri o'rniga turmasdi -
+            # asl yozuv joyida qoladi (egri yozuvni burish hali qilinmagan).
+            logger.info("Egri yozuv tashlab ketildi: %r", (item.get("original") or "")[:30])
             continue
         big = _is_sfx(item, page_line_h, H)
         if big:
@@ -1913,6 +1949,11 @@ def render_translation(image_bytes: bytes, translations: list[dict], quality: in
             # Keskin qiya yozuv: to'g'ri quti burchaklari yozuvdan tashqariga (boshqa fonga) chiqadi -
             # halqadan olingan fon rangi va flood ishonchsiz, oyna ichiga boshqa rangli tik
             # kesilgan dog' bo'yalardi (sinov, 25 daraja). Faqat harflar o'chiriladi.
+            filled = None
+        elif FONT_STYLES and _third_color(arr, box, bg_color):
+            # Yozuv ichidan uchinchi rang o'tadi (belgi/stamp ustidagi qizil chiziq): pufakcha deb bo'yalsa chiziq
+            # oq to'rtburchak bo'lib kesilardi (2026-10-18) - faqat harflar rasm usulida o'chiriladi.
+            logger.info("Yozuv ichida begona rang (belgi/chiziq): %s - pufakcha emas, harflar o'chiriladi", box)
             filled = None
         elif FONT_STYLES:
             # Hammasi avval NUSXADA sinaladi. Katta pufakcha (baqiriq) qidiruv oynasiga sig'masa -
@@ -2051,7 +2092,52 @@ def render_translation(image_bytes: bytes, translations: list[dict], quality: in
                 report["skipped"] = report.get("skipped", 0) + 1
 
     _style.name = "speech"
+    for vbox, vtext, vink in vjobs:
+        try:
+            _draw_vertical(out, vbox, vtext, vink)
+        except Exception:
+            logger.exception("Tik yozuv chizilmadi (%r) - o'tkazib yuborildi", vbox)
     return encode_jpeg(out, quality=quality)
+
+
+def _draw_vertical(out: Image.Image, box, text: str, ink) -> None:
+    """Tik yozuv: matn tekis qatlamga yoziladi, soat yo'nalishida 90 daraja buriladi (yuqoridan pastga o'qiladi)."""
+    x1, y1, x2, y2 = box
+    w, h = x2 - x1, y2 - y1
+    region = np.asarray(out.crop(box).convert("L"))
+    bright = region.mean() > 140 if region.size else True
+    fg, st = ((20, 20, 20), (255, 255, 255)) if bright else ((255, 255, 255), (0, 0, 0))
+    if ink is not None:
+        fg = tuple(ink)
+        st = (255, 255, 255) if sum(fg) / 3 < 150 else (0, 0, 0)
+    layer = Image.new("RGBA", (h, w), (0, 0, 0, 0))
+    _style.name = "speech"
+    _draw_block(ImageDraw.Draw(layer), (0, 0, h, w), text, fg, max_size=int(w * 0.85), stroke=st, pad=2)
+    rot = layer.rotate(-90, expand=True)
+    out.paste(rot, (x1, y1), rot)
+
+
+def _third_color(arr: np.ndarray, box, bg) -> bool:
+    """Matn qutisida fon va harf rangidan boshqa to'yingan rang ko'pmi (oq pufakchada qizil chiziq/belgi)?
+
+    Oddiy pufakchada faqat fon va (kulrang/qora) harf bor; to'yingan rangli piksellar >7% bo'lsa quti ichidan
+    boshqa narsa o'tadi. Fon o'zi rangli bo'lsa (qizil oyna) - fondan farq qilganlari sanaladi."""
+    x1, y1, x2, y2 = box
+    sub = arr[y1:y2, x1:x2].astype(np.int16)
+    if sub.size == 0:
+        return False
+    sat = sub.max(axis=2) - sub.min(axis=2)
+    far = np.abs(sub - np.array(bg, np.int16)).max(axis=2) > 70
+    lum = sub @ np.array([0.299, 0.587, 0.114], np.float32)
+    colored = (sat > 60) & far & (lum > 60)
+    bg_sat = max(bg) - min(bg)
+    if bg_sat > 60:                                  # fon rangli: harf och bo'lsa to'yinmagan - sanalmaydi
+        colored &= sat > bg_sat * 0.5
+    import cv2
+
+    # Rangli HARFLAR (qizil so'z) ingichka - 15x15 ochish ularni yo'qotadi; qalin chiziq/belgi qoladi
+    thick = cv2.morphologyEx(colored.astype(np.uint8), cv2.MORPH_OPEN, np.ones((15, 15), np.uint8))
+    return float(thick.mean()) > 0.02
 
 
 def _ink(arr: np.ndarray, box: tuple[int, int, int, int], bg: tuple[int, int, int]) -> int:
