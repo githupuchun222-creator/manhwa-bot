@@ -1251,7 +1251,9 @@ async def wait_turn(job: dict, status) -> None:
         for r in rows:
             if r["ref"] == ref:
                 break
-            if r.get("uid") == uid and r.get("state") != "done":
+            # faqat HOZIR ishlanayotgan oldingi bob kutiladi. Navbatga qaytgan (qayta yonish/xato sabab) oldingi bob
+            # hali boshlanmagan - uni kutish tayyor bobni 10 daqiqa (TURN_WAIT) ushlab turardi (2026-10-19 o'lchov: 600 s)
+            if r.get("uid") == uid and r.get("state") == "work" and (r.get("lease_s") or 0) > 0:
                 ahead = True
                 break
         if not ahead:
