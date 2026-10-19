@@ -12,6 +12,9 @@ Restart=always
 RestartSec=5
 # xotira to'lsa butun serverni emas, faqat botni o'ldirsin
 OOMScoreAdjust=500
+# asosiy bot: serverdagi boshqa botdan (manhwa-atomic, standart 100) protsessor/diskda ~10x ustun (2026-10-19, egasi so'rovi)
+CPUWeight=1000
+IOWeight=1000
 
 [Install]
 WantedBy=multi-user.target
