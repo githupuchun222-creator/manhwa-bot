@@ -835,15 +835,18 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     # Kunlik chegara (DAILY_LIMIT): bitta bob = bitta PDF/ZIP yoki bitta albom yoki bitta rasm
+    # 2026-10-19: chegara FAQAT obunaga; obuna limiti tugagach paket balansidan yechiladi (over), paket cheklanmaydi
     daily = False
-    if admins.DAILY_LIMIT and not admins.is_admin(user_id):
+    over = admins.sub_over_daily(user_id)
+    if admins.DAILY_LIMIT and admins.is_paid(user_id) and not admins.is_admin(user_id):
         group = msg.media_group_id
         if not (group and _daily_groups.get(user_id) == group):
             if admins.daily_blocked(user_id):
-                await msg.reply_text(daily_limit_text())
+                await msg.reply_text(daily_limit_text(), parse_mode="HTML")
                 return
-            admins.add_daily(user_id)
-            daily = True
+            if not over:
+                admins.add_daily(user_id)
+                daily = True
             if group:
                 _daily_groups[user_id] = group
 
@@ -851,7 +854,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # yoki bitta albom (birga yuborilgan rasmlar, media_group_id bir xil) yoki bitta rasm.
     charged = bal_charged = False
     if ((admins.FREE_CHAPTERS or admins.PACKS_ON) and not admins.is_admin(user_id)
-            and not admins.is_paid(user_id)):
+            and (not admins.is_paid(user_id) or over)):
         group = msg.media_group_id
         if not (group and _free_groups.get(user_id) == group):
             if admins.free_left(user_id) <= 0 and admins.PACKS_ON and admins.balance(user_id) > 0:
@@ -1273,8 +1276,10 @@ _daily_groups: dict[int, str] = {}     # kunlik hisobga olingan albom (foydalanu
 
 
 def daily_limit_text() -> str:
-    return ("⛔ Bugun juda ko'p bob yubordingiz.\n"
-            "Ertaga (Toshkent vaqti bilan 00:00 dan keyin) davom ettiring.")
+    return (f"⛔ <b>Bugungi obuna limiti tugadi</b> ({admins.DAILY_LIMIT} bob).\n"
+            "Ertaga Toshkent vaqti bilan 00:00 da yangilanadi.\n\n"
+            "📦 Hoziroq davom etish uchun <b>paket</b> oling - paket bilan kunlik cheklov yo'q:\n"
+            + admins.pack_block() + "\n\nTo'lov uchun adminga yozing (💰 Narxlar va shartlar).")
 
 
 def _refund(job: dict) -> None:
@@ -2043,13 +2048,16 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
 # yopiq bo'lishi mumkin - o'shanda Cloudflare'dagi `manhwa-gate` orqali
 # (TG_API_BASE=https://.../tg) ishlaydi.
 TG_API_BASE = os.getenv("TG_API_BASE", "").rstrip("/")
+# Serverdagi o'z Bot API serverimiz (telegram-bot-api --local, 2026-10-19): fayllar 2 GB gacha, getFile diskdagi yo'lni beradi
+TG_LOCAL = os.getenv("TG_LOCAL") == "1"
 
 
 def _build_app(token: str) -> Application:
     shop.B = broadcast.B = sys.modules[__name__]           # buyurtma moduli navbat/konveyerdan foydalanadi
     builder = Application.builder()
     if TG_API_BASE:
-        builder = builder.base_url(f"{TG_API_BASE}/bot").base_file_url(f"{TG_API_BASE}/file/bot")
+        builder = (builder.base_url(f"{TG_API_BASE}/bot").base_file_url(f"{TG_API_BASE}/file/bot")
+                   .local_mode(TG_LOCAL))
     app = (
         builder
         .token(token)

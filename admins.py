@@ -120,20 +120,64 @@ def _load() -> dict:
     return _read_file()
 
 
+def _push(body: bytes) -> bool:
+    try:
+        _remote("PUT", body)
+        _shared["fresh"] = _time.time()        # mahalliy nusxa endi darvozadagi bilan bir xil
+        return True
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Adminlar ro'yxati saqlanmadi: %s", exc)
+        return False
+
+
+# ORQA FONDA YOZISH (2026-10-19): 1,3 MB PUT 0,5-2 s (15 s gacha) davom etadi va handler/hovuz ichida chaqirilgani
+# uchun shu vaqt bot HAMMA foydalanuvchiga javob bermay turardi. Endi fayl darhol yoziladi, darvozaga esa alohida
+# oqim eng so'nggi holatni yuboradi (oraliq holatlar tashlab ketiladi). Yuborilguncha .dirty turadi - jarayon shu
+# payt o'chsa, qayta ishga tushish darvozadagi eski nusxani o'qimaydi (pull_remote mahalliy faylni yuboradi).
+_pending: dict = {}
+_pending_cv = threading.Condition()
+
+
+def _pusher() -> None:
+    while True:
+        with _pending_cv:
+            while "data" not in _pending:
+                _pending_cv.wait()
+            data = _pending.pop("data")
+        if _push(data):
+            with _pending_cv:
+                if "data" not in _pending:
+                    _DIRTY.unlink(missing_ok=True)
+        else:
+            _time.sleep(10)                    # darvoza ishlamayapti - keyingi o'zgarishda (yoki 10 s dan keyin) yana
+            with _pending_cv:
+                _pending.setdefault("data", data)
+
+
+_pusher_thread: list = []
+
+
 def _save(data: dict) -> None:
     _write_file(data)
-    if ADMINS_URL and not READONLY["on"]:
+    if not ADMINS_URL or READONLY["on"]:
+        return
+    body = json.dumps(data).encode("utf-8")   # shu yerda: chaqiruvchi dict'ni keyin o'zgartirsa ham nusxa to'g'ri
+    if shared():                               # ikki runner birga: ikkinchisi darhol o'qiydi - kutib yozamiz
+        _DIRTY.touch()
+        if _push(body):
+            _DIRTY.unlink(missing_ok=True)
+        return
+    with _pending_cv:
         try:
-            _remote("PUT", json.dumps(data).encode("utf-8"))
-            _shared["fresh"] = _time.time()        # mahalliy nusxa endi darvozadagi bilan bir xil
-            if _DIRTY.exists():
-                _DIRTY.unlink(missing_ok=True)
-        except Exception as exc:
-            logging.getLogger(__name__).warning("Adminlar ro'yxati saqlanmadi: %s", exc)
-            try:
-                _DIRTY.touch()
-            except OSError:
-                pass
+            _DIRTY.touch()                     # qulf ostida: yozuvchi oqim uni yangi holat kelgan payt o'chirib yubormasin
+        except OSError:
+            pass
+        _pending["data"] = body
+        if not _pusher_thread:
+            t = threading.Thread(target=_pusher, name="admins-push", daemon=True)
+            t.start()
+            _pusher_thread.append(t)
+        _pending_cv.notify()
 
 
 # PUBLIC_BOT=1 (2026-09-30, faqat @Manhwatarjima1_bot - foydalanuvchi: "hamma foydalana
@@ -400,8 +444,15 @@ def add_daily(user_id: int, delta: int = 1) -> int:
     return n
 
 
+# KUNLIK CHEGARA FAQAT OBUNAGA (2026-10-19, foydalanuvchi: "kuniga 125 ta, paketni cheklovsiz qil"): kunlik hisobga
+# faqat obuna hisobidan ketgan boblar yoziladi. Paket boblari cheklanmaydi (har biri uchun to'langan); obunachi
+# chegaraga yetsa, paket balansi bo'lsa o'shandan davom etadi, bo'lmasa paket taklif qilinadi.
+def sub_over_daily(user_id: int) -> bool:
+    return bool(DAILY_LIMIT) and not is_admin(user_id) and is_paid(user_id) and daily_used(user_id) >= DAILY_LIMIT
+
+
 def daily_blocked(user_id: int) -> bool:
-    return bool(DAILY_LIMIT) and not is_admin(user_id) and daily_used(user_id) >= DAILY_LIMIT
+    return sub_over_daily(user_id) and not (PACKS_ON and balance(user_id) > 0)
 
 
 # BOB PAKETLARI (2026-10-01, @Manhwatarjima1_bot - foydalanuvchi: "bu botda oylik obuna emas

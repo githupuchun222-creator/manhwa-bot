@@ -8,6 +8,7 @@ har bir sahifani alohida rasm sifatida tarjima qiladi.
 """
 import io
 import logging
+import os
 import threading
 
 import pypdfium2 as pdfium
@@ -178,7 +179,8 @@ def reslice(pages: list[bytes]) -> list[bytes]:
 
 
 # Telegram bot 50 MB dan katta fayl yubora olmaydi - zaxira bilan
-MAX_OUTPUT_BYTES = 48 * 1024 * 1024
+# oddiy Bot API 50 MB gacha yuboradi; serverdagi o'z Bot API (TG_LOCAL) bilan 2000 MB (2026-10-19)
+MAX_OUTPUT_BYTES = int(os.getenv("MAX_OUTPUT_MB", "48")) * 1024 * 1024
 # PDF sahifa kengligi (punktda). Piksel = punkt qilinsa 1100x19556 sahifa ba'zi
 # o'quvchilar chegarasidan (14400 pt) oshib ketardi.
 _PAGE_WIDTH_PT = 600.0

@@ -13,6 +13,7 @@ yetib bormasa hisob qaytariladi (bot._refund).
 """
 
 import asyncio
+import calendar
 import html
 import io
 import logging
@@ -144,14 +145,31 @@ def _price(now: str, old: str = "") -> str:
     return f"<s>{old}</s> {now}" if old else now
 
 
+def _sub_usage_line(uid: int) -> str:
+    """Obunachi uchun: bugungi limit va paket balansi (limit tugasa balansdan davom etadi)."""
+    bal = admins.balance(uid) if admins.PACKS_ON else 0
+    if not admins.DAILY_LIMIT:
+        return f"💰 Paket balansi: <b>{bal} ta bob</b>" if bal else ""
+    used, lim = admins.daily_used(uid), admins.DAILY_LIMIT
+    left = max(0, lim - used)
+    full = round(10 * min(used, lim) / lim)
+    line = f"📊 Bugun: <b>{used} / {lim}</b> bob {'▓' * full}{'░' * (10 - full)} (qoldi {left})"
+    if bal:
+        line += f"\n💰 Paket balansi: <b>{bal} ta bob</b> - obuna limiti tugagach shundan davom etadi"
+    elif not left:
+        line += "\n⛔ Bugungi limit tugadi - davom etish uchun paket oling (💰 Narxlar va shartlar)"
+    return line
+
+
 def _trial_line(uid: int) -> str:
     st = trial_state(uid)
     if st == "paket":
         return f"💰 Balansingiz: <b>{admins.balance(uid)} ta bob</b> (muddatsiz)."
     if st == "cheksiz":
         until = admins.sub_until(uid)
-        return (f"✅ Obuna faol: <b>{_date(until)}</b> gacha." if until > time.time()
-                else "✅ Siz adminsiz - hisobdan yechilmaydi.")
+        if until <= time.time() or admins.is_admin(uid):
+            return "✅ Siz adminsiz - hisobdan yechilmaydi."
+        return f"✅ Obuna faol: <b>{_date(until)}</b> gacha.\n" + _sub_usage_line(uid)
     return {"mavjud": "🎁 Bepul bob: <b>mavjud</b> ✅",
             "band": "🎁 Bepul bob: <b>band</b> - hozirgi buyurtmangizda ishlatilmoqda ⏳",
             "ishlatilgan": "🎁 Bepul bob: <b>ishlatilgan</b>"}[st]
@@ -263,8 +281,11 @@ async def show_pay(update: Update, context, edit=False) -> None:
         until = admins.sub_until(uid)
         body = (free + (f"💳 Obuna: <b>{_date(until)}</b> gacha\n" if until > time.time() else
                         "💳 Obuna: <b>faol emas</b>\n")
+                + (f"📊 Bugungi obuna limiti: <b>{admins.daily_used(uid)} / {admins.DAILY_LIMIT}</b> bob\n"
+                   if admins.DAILY_LIMIT and until > time.time() else "")
                 + f"💰 Balansingiz: <b>{admins.balance(uid)} ta bob</b>\n"
-                + "\n💎 <b>Obuna</b> (muddat davomida har bob uchun alohida to‘lamaysiz):\n"
+                + "\n💎 <b>Obuna</b> (muddat davomida har bob uchun alohida to‘lamaysiz"
+                + (f", kuniga {admins.DAILY_LIMIT} bobgacha" if admins.DAILY_LIMIT else "") + "):\n"
                 + (f"⚡ Kunlik: {B.SUB_DAY_PRICE} / {admins.SUB_DAY_DAYS} kun\n" if B.SUB_DAY_PRICE else "")
                 + f"🔥 Haftalik: {_price(B.SUB_WEEK_PRICE, B.SUB_WEEK_OLD_PRICE)} / {admins.SUB_WEEK_DAYS} kun\n"
                 f"💎 Oylik: {_price(B.SUB_PRICE, B.SUB_OLD_PRICE)} / {admins.SUB_DAYS} kun\n"
@@ -272,7 +293,9 @@ async def show_pay(update: Update, context, edit=False) -> None:
                 + admins.pack_block() + "\n"
                 "• Har tarjima qilingan bob balansdan bitta yechiladi\n"
                 "• Ish bajarilmasa (xato/bekor) - bob qaytariladi\n"
-                "• Obuna faol bo‘lsa balans yechilmaydi\n\n"
+                + ("• <b>Paket bilan kunlik cheklov yo‘q</b>\n"
+                   "• Obuna faol bo‘lsa avval obuna ishlatiladi, kunlik limit tugagach - balans\n\n"
+                   if admins.DAILY_LIMIT else "• Obuna faol bo‘lsa balans yechilmaydi\n\n") +
                 "<b>To‘lov:</b> adminga yozing, to‘lovdan keyin admin obuna yoki paketni yoqadi "
                 "(botda avtomatik to‘lov yo‘q).")
     elif admins.PACKS_ON:
@@ -299,6 +322,33 @@ async def show_pay(update: Update, context, edit=False) -> None:
             [_ib("📝 So‘rov yuborish", "sh:inq")], _home_row()]
     await _reply(update, head + body + f"\n\nSizning ID: <code>{uid}</code>",
                  InlineKeyboardMarkup(rows), edit)
+
+
+_limit_told: dict[int, str] = {}         # egasiga "limitga yetdi" xabari kuniga bir marta
+
+
+async def limit_offer(update: Update, context, edit: bool = True) -> None:
+    """Obunachi kunlik chegaraga yetdi: paket taklifi (paket bilan kunlik cheklov yo'q) + egasiga bir marta xabar."""
+    uid = update.effective_user.id
+    text = (f"⛔ <b>Bugungi obuna limiti tugadi</b>: {admins.daily_used(uid)} / {admins.DAILY_LIMIT} bob.\n"
+            "Obuna limiti ertaga Toshkent vaqti bilan 00:00 da yangilanadi.\n\n"
+            "📦 <b>Hoziroq davom etish uchun paket oling</b> - paket bilan kunlik cheklov yo‘q, "
+            "boblar muddatsiz:\n" + admins.pack_block() + "\n\n"
+            "Paket qo‘shilgach, yuborgan fayllaringizni qayta yuborsangiz yoki 🚀 ni bossangiz bo‘ldi - "
+            "avval obuna, limit tugagach balans ishlatiladi.\n\n"
+            "<b>To‘lov:</b> adminga yozing, to‘lovdan keyin admin paketni qo‘shadi.")
+    rows = [[_ib("💰 Paketlar va narxlar", "sh:pay")], [_ib("✍️ Admin bilan bog‘lanish", "sh:contact")], _home_row()]
+    await _reply(update, text, InlineKeyboardMarkup(rows), edit)
+    if _limit_told.get(uid) != admins._today():
+        _limit_told[uid] = admins._today()
+        u = update.effective_user
+        who = f"@{u.username}" if u.username else (u.full_name or str(uid))
+        try:
+            await context.bot.send_message(
+                admins.OWNER_ID, f"📈 {who} (<code>{uid}</code>) bugungi obuna limitiga yetdi "
+                f"({admins.DAILY_LIMIT} bob) - unga paket taklif qilindi.", parse_mode="HTML")
+        except TelegramError:
+            pass
 
 
 async def show_contact(update: Update, context, edit=False) -> None:
@@ -495,7 +545,7 @@ async def user_retry(update: Update, context, ref: str) -> None:
         await update.effective_message.reply_text("Bu bob allaqachon navbatda \u23f3")
         return
     if admins.daily_blocked(uid):
-        await _reply(update, B.daily_limit_text(), InlineKeyboardMarkup([_home_row()]), edit=True)
+        await limit_offer(update, context)
         return
     kind = _charge_kind(uid)
     if kind is None:
@@ -510,7 +560,7 @@ async def user_retry(update: Update, context, ref: str) -> None:
         admins.add_used(uid)
     elif bal:
         admins.add_balance(uid, -1)
-    daily = bool(admins.DAILY_LIMIT) and not admins.is_admin(uid)
+    daily = kind == "obuna" and bool(admins.DAILY_LIMIT)     # kunlik hisobga faqat obuna boblari
     if daily:
         admins.add_daily(uid)
     _set_order(ref, status=ST_QUEUED, kind=kind)
@@ -580,8 +630,8 @@ def _charge_kind(uid: int) -> str | None:
     """
     if admins.is_admin(uid):
         return "admin"
-    if admins.is_paid(uid):
-        return "obuna"
+    if admins.is_paid(uid) and not admins.sub_over_daily(uid):
+        return "obuna"                       # kunlik obuna chegarasi tugagan bo'lsa - paket balansiga o'tadi
     if admins.free_left(uid) > 0:
         return "bepul"
     if admins.PACKS_ON and admins.balance(uid) > 0:
@@ -946,7 +996,7 @@ async def _start_job(update: Update, context, draft: dict, nonce: str) -> None:
         await _reply(update, "Avval sahifalarni yuboring.", _panel_markup(cur), edit=True)
         return
     if admins.daily_blocked(uid):
-        await _reply(update, B.daily_limit_text(), InlineKeyboardMarkup([_home_row()]), edit=True)
+        await limit_offer(update, context)
         return
     kind = _charge_kind(uid)
     if kind is None:                     # mablag' yetmaydi - fayllar SAQLANADI
@@ -965,7 +1015,7 @@ async def _start_job(update: Update, context, draft: dict, nonce: str) -> None:
         allow = max(1, admins.free_left(uid))
     elif kind == "paket":
         allow = max(1, admins.balance(uid))
-    if admins.DAILY_LIMIT and not admins.is_admin(uid):
+    if kind == "obuna" and admins.DAILY_LIMIT:
         allow = min(allow, max(1, admins.DAILY_LIMIT - admins.daily_used(uid)))
     over = max(0, n - MAX_CHAPTERS)       # bitta buyurtmada MAX_CHAPTERS tadan ortiq bob olinmaydi
     allow = min(allow, MAX_CHAPTERS)
@@ -992,7 +1042,7 @@ async def _start_job(update: Update, context, draft: dict, nonce: str) -> None:
         admins.add_used(uid, n)          # yetib bormasa qaytariladi (bot._refund)
     elif bal:
         admins.add_balance(uid, -n)
-    daily = bool(admins.DAILY_LIMIT) and not admins.is_admin(uid)
+    daily = kind == "obuna" and bool(admins.DAILY_LIMIT)     # kunlik hisobga faqat obuna boblari
     if daily:
         admins.add_daily(uid, n)
     note = (f"\n\U0001f4da <b>{n} ta bob</b> - har biri alohida fayl bo\u2018lib qaytadi." if n > 1 else "")
@@ -1720,7 +1770,29 @@ async def admin_panel(update: Update, context, edit=False) -> None:
     today = time.time() - 86400
     subs = sum(1 for _, t in admins.list_paid() if t > time.time())
     bals = admins.list_balances()
+    # BUGUN (Toshkent kuni, 2026-10-19): boblar, eng faol foydalanuvchilar, limitga yetganlar, hozirgi yuk
+    day0 = calendar.timegm(time.strptime(admins._today(), "%Y-%m-%d")) - 5 * 3600
+    todays = [o for o in orders if o["created"] >= day0]
+    ch = lambda o: int(o.get("chapters") or o.get("parts") or 1)
+    per: dict = {}
+    for o in todays:
+        p = per.setdefault(o["uid"], {"n": 0, "name": o.get("username") and "@" + o["username"] or o.get("who") or str(o["uid"])})
+        p["n"] += ch(o)
+    kind = lambda u: ("obuna" if admins.is_paid(u) else "paket" if admins.balance(u) > 0 else "—")
+    top = sorted(per.items(), key=lambda kv: -kv[1]["n"])[:5]
+    top_lines = "".join(
+        f"  {i}. {html.escape(str(p['name']))[:24]} - <b>{p['n']}</b> bob ({kind(u)}"
+        + (f", limit {admins.daily_used(u)}/{admins.DAILY_LIMIT}" if admins.DAILY_LIMIT and admins.is_paid(u) else "")
+        + ")\n" for i, (u, p) in enumerate(top, 1))
+    hit = sum(1 for u in per if admins.sub_over_daily(u))
+    busy = (len(B._active) if B else 0) + len(pool._running)      # hovuz boblari ham shu serverda ishlanadi
+    wait = len(B._waiting) if B else 0
     text = ("⚙️ <b>Admin panel</b>\n\n"
+            f"📅 <b>Bugun</b> (Toshkent): <b>{sum(ch(o) for o in todays)}</b> bob, "
+            f"{len(per)} kishi · yetkazilgan {sum(ch(o) for o in todays if o['status'] == ST_DONE)}\n"
+            + (top_lines or "  hali buyurtma yo‘q\n")
+            + (f"⛔ Obuna limitiga ({admins.DAILY_LIMIT}) yetganlar: <b>{hit}</b>\n" if admins.DAILY_LIMIT else "")
+            + f"🖥 Hozir: ishlanmoqda <b>{busy}</b>, navbatda <b>{wait}</b> (shu serverda)\n\n"
             f"🆕 Oxirgi 24 soatda buyurtma: <b>{sum(1 for o in orders if o['created'] > today)}</b>\n"
             f"⏳ Kutilmoqda: <b>{cnt[ST_QUEUED]}</b> · ⚙️ Ishlanmoqda: <b>{cnt[ST_WORK]}</b>\n"
             f"✅ Yetkazilgan: <b>{cnt[ST_DONE]}</b> · ⚠️ Xato: <b>{cnt[ST_FAIL]}</b> · "

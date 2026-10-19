@@ -1,3 +1,4 @@
+import itertools
 import json
 import logging
 import os
@@ -408,7 +409,7 @@ def read_page(image_bytes: bytes, media_type: str = "image/jpeg",
     # Bitta pufakchaning qatorlarini qo'shamiz (OCR ularni alohida beradi)
     result = merge_lines(result, image)
     for it in result:
-        it["original"] = fix_ocr_digits(it.get("original", ""))
+        it["original"] = fix_ocr_letters(fix_ocr_digits(it.get("original", "")))
     # Skanlatsiya suv belgilari/reklama tarjima qilinmaydi va tegilmaydi
     # (haqiqiy bobda "ASURASCANS.COM" "tarjima" qilinib, ustiga dog' tushgan edi)
     dropped = [it for it in result if _is_watermark(it.get("original", ""))]
@@ -448,7 +449,60 @@ def fix_ocr_digits(text: str) -> str:
     text = re.sub(r"\b(LV|LVL)\.?\s*([0-9IlOoDSB]{1,3})\b",
                   lambda m: f"{m.group(1)}.{digits(re.match(r'.*', m.group(2)))}"
                   if re.search(r"\d", m.group(2)) or m.group(2) in ("I", "l") else m.group(0), text)
+    # komiks shriftidagi "???" OCR'da "22?" / "2??" bo'lib keladi: "ESCAPE22?" -> tarjimada "OLAMAN22?" (2026-10-19)
+    text = re.sub(r"(?<=[A-Za-z])(22\?|2\?\?)", "???", text)
     return re.sub(r"\b[0-9IlOoDSB]{2,4}\b", digits, text)
+
+
+def fix_ocr_letters(text: str) -> str:
+    """Komiks shriftida OCR "U" ni "L" deb o'qiydi: "YOL" -> "YOU", "SLCH" -> "SUCH", "SHOLLDI?" -> "SHOULD I?".
+
+    2026-10-19 tahlil: ikki bobda ~15 so'z shunday buzilgan, Gemini noto'g'ri inglizchadan ma'noni taxmin qilib
+    xato tarjima bergan ("SHOULD I?" -> "O'xshadimi?"). Faqat KATTA harfli va lug'atda YO'Q so'z o'zgaradi
+    (ALL, OLD, WILL kabi to'g'ri so'zlarga tegilmaydi); natija lug'atda tez-tez uchraydigan so'z bo'lishi shart.
+    """
+    try:
+        import wordninja
+        cost = wordninja.DEFAULT_LANGUAGE_MODEL._wordcost
+    except Exception:
+        return text
+
+    def best(low: str, limit: float = 12.0) -> str | None:
+        found = None
+        if "li" in low:                                   # "U" ba'zan "LI" bo'lib o'qiladi: "COLINTING" -> "COUNTING"
+            cand = low.replace("li", "u")
+            if cost.get(cand, 99) < limit:
+                found = cand
+        pos = [i for i, ch in enumerate(low) if ch == "l"]
+        for k in range(1, min(3, len(pos)) + 1):
+            for sub in itertools.combinations(pos, k):
+                cand = "".join("u" if i in sub else ch for i, ch in enumerate(low))
+                if cost.get(cand, 99) < limit and (found is None or cost[cand] < cost[found]):
+                    found = cand
+            if found:
+                return found
+        return found
+
+    def fix(m: re.Match) -> str:
+        w = m.group(0)
+        low = w.lower()
+        if not w.isupper() or len(w) < 3 or "L" not in w:
+            return w
+        if low in cost:
+            # lug'atda bor, lekin juda kam uchraydigan so'z ("LSE", "OLT", "GLY") va "U" bilan keng tarqalgan so'z
+            # ("USE", "OUT", "GUY") - tuzatiladi. "SLED"/"SUED" kabi ikkalasi teng so'zlarga tegilmaydi.
+            got = best(low, cost[low] - 2.5) if cost[low] >= 12.5 else None
+            return got.upper() if got else w
+        got = best(low)
+        if got:
+            return got.upper()
+        if low.endswith("i") and len(low) > 3:            # "SHOLLDI" = "SHOULD I" (bo'shliq tushib qolgan)
+            head = low[:-1] if low[:-1] in cost else best(low[:-1])
+            if head:
+                return head.upper() + " I"
+        return w
+
+    return re.sub(r"[A-Za-z]+", fix, text)
 
 
 _WATERMARK = re.compile(
@@ -470,10 +524,11 @@ _UI_JUNK = re.compile(
     r"|\b[A-Z][A-Za-z]+\s+Scans\b|\b[A-Z]{2,}\s+SCANS\b|\b[A-Z][A-Za-z]+\s+Comics\b|\b[A-Z]{2,}\s+COMICS\b"
     r"|\bQI\s*MANGA\b|^manh(wa|ua)\w{0,5}\.*$|^mgeko"
     # rasmdagi dastur kodi (2026-10-16: "Content-Type, text/HTML", "DEPAGE=936 %>" buzilib chiqqan edi)
-    r"|<%|%>|=\s*(true|false)\b|=\s*\"|content-?type|\.response|\w\(\)|text/html"
-    # OCR chiqindisi logotipdan: harf+raqam aralash uzun "so'z" ("OIMANG13") - tarjima qilinmaydi
-    r"|\b[A-Za-z]{4,}\d{2}\b",
+    r"|<%|%>|=\s*(true|false)\b|=\s*\"|content-?type|\.response|\w\(\)|text/html",
     re.IGNORECASE)
+# OCR chiqindisi logotipdan: harf+raqam aralash uzun "so'z" ("OIMANG13") - faqat 1-2 so'zli yozuvda.
+# Gapda bo'lsa bu "???" ning "22?" o'qilgani: "...WHEN CAN I ESCAPE22?" tarjimasiz qolgan edi (2026-10-19).
+_LOGO_JUNK = re.compile(r"\b[A-Za-z]{4,}\d{2}\b")
 
 
 def _is_watermark(text: str) -> bool:
@@ -487,6 +542,8 @@ def _ui_junk(t: str) -> bool:
     # qisqa logotip: "Eon comics", "Oi Scans" (bosh harfli nom + comics/scans/manga/toon, boshqa so'z yo'q)
     if re.fullmatch(r"\W*[A-Z][A-Za-z]+\s+(comics|scans|manga|toons?)\W*", t, flags=re.IGNORECASE) \
             and t.strip()[0].isupper() and t.split()[0] not in ("The", "My", "His", "Her", "Our", "Your", "It", "He", "She", "We", "I"):
+        return True
+    if len(t.split()) <= 2 and _LOGO_JUNK.search(t):
         return True
     # IGNORECASE faqat qat'iy iboralar uchun; "Xxx Scans" bosh harf talabi esa case-sensitive
     for m in _UI_JUNK.finditer(t):
@@ -530,6 +587,8 @@ _PROMO = re.compile(r"donat(e|ion)|recruit|consider\s+(support|donat)|support\s+
                     # sayt reklamasi (2026-10-18, dragontea): tarjima qilinsa havola buzilardi ("KD-FI.COMIDRAGONTEA")
                     r"|ko-?fi|dragon\s*tea|read\s+(it\s+first|the\s+full\s+chapter|more\s+chapters)\b"
                     r"|release\s+faster|\bbuy\s+raw\b|discord\.gg"
+                    # "READ AT FLIXSCANS.ORG / FOR FASTER UPDATES!!" - ikkinchi qator tarjima qilinib qolardi (2026-10-19)
+                    r"|for\s+(the\s+)?faster\s+(updates|releases?)"
                     r"|\bnch\s+(software|photo)|photo\s*pad|trial\s+version", re.IGNORECASE)
 _CREDIT_ROLE = re.compile(
     r"(?i)(staff|credits?|tlc?|rd|ed|pr|ts|qc|cl|rp|translator|translation|proofreader|proofreading"

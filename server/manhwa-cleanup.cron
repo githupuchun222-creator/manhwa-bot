@@ -1,0 +1,5 @@
+# /etc/cron.d/manhwa-cleanup - disk tozalash har soatda (server/cleanup.sh)
+17 * * * * root /bin/bash /opt/manhwa-bot4/server/cleanup.sh
+# kuzatuvchi har 5 daqiqada, zaxira har kuni 22:00 UTC (Toshkent 03:00)
+*/5 * * * * root /bin/bash /opt/manhwa-bot4/server/guard.sh
+0 22 * * * root /bin/bash /opt/manhwa-bot4/server/backup.sh >/dev/null

@@ -2210,11 +2210,19 @@ def _merge_same_bubble(jobs: list) -> list:
     o'chiradi va ikkala tarjima BIR JOYGA ustma-ust yozilardi. Endi ular
     o'qish tartibida bitta matn qilinadi.
     """
+    def near(a, b):
+        # OCR bo'lib bergan BIR blokning qatorlari: tik oralig'i qator balandligidan kichik, eni ustma-ust.
+        # Oralig'i kattaroq bo'lsa matnlar pufakchaning ALOHIDA qismlarida (tishli S-shakl, 2026-10-19):
+        # qo'shilsa umumiy markaz ikki qism orasidagi tor bo'yinga tushib, tarjima ingichka ustunda chiqardi.
+        gap = max(a[1], b[1]) - min(a[3], b[3])
+        overlap = min(a[2], b[2]) - max(a[0], b[0])
+        return gap < 0.6 * min(a[3] - a[1], b[3] - b[1]) and overlap > 0.4 * min(a[2] - a[0], b[2] - b[0])
+
     out: list = []
     for job in jobs:
         if job[0] == "bubble":
             for k, prev in enumerate(out):
-                if prev[0] == "bubble" and _box_iou(prev[1], job[1]) > 0.5:
+                if prev[0] == "bubble" and _box_iou(prev[1], job[1]) > 0.5 and near(prev[6], job[6]):
                     sizes = [s for s in (prev[4], job[4]) if s]
                     tb = (min(prev[6][0], job[6][0]), min(prev[6][1], job[6][1]),
                           max(prev[6][2], job[6][2]), max(prev[6][3], job[6][3]))

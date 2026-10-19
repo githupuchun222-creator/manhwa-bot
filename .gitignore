@@ -18,3 +18,4 @@ local.env
 admins.json.tmp
 cancel-pending.json*
 server/bot.env
+server-zaxira/
