@@ -1198,7 +1198,7 @@ async def run_pool_chapter(bot, job: dict) -> dict:
         pages = await _load_pages(ctx, d["files"])
         if not pages:
             raise RuntimeError("sahifa topilmadi")
-        pdf = B.pdf_utils.build_pdf(pages[:B.MAX_PDF_PAGES])
+        pdf = B.pdf_utils.build_pdf(pages[:_page_cap()])
         await B._process_pdf(None, ctx, pdf, status, chat_id=d["chat"], src_name=d["name"], ref=d["order"],
                                 rendered=_rendered(pages, d["files"]))
     except asyncio.CancelledError:
@@ -1625,10 +1625,16 @@ async def _inquiry(update: Update, context, text: str) -> None:
 
 
 # ------------------------------------------------------------------ bajarish (bot navbati)
+def _page_cap() -> int:
+    """Bobdagi rasmlar chegarasi: juda uzun PDF sahifa bo'laklarga bo'linadi (pdf_utils.MAX_TILES) - limit
+    PDF sahifalar soniga (MAX_PDF_PAGES) teng qolsin, bo'laklar kesilib qolmasin."""
+    return B.MAX_PDF_PAGES * B.pdf_utils.MAX_TILES
+
+
 def _rendered(pages: list[bytes], files: list[dict]):
     """Sof PDF bobda sahifalar tayyor JPEG - qayta chizilmaydi; ZIP/rasm eni normallashtirilishi kerak."""
     ok = all(f["kind"] == "pdf" and not B.pdf_utils.is_zip(b"", f.get("name")) for f in files)
-    return pages[:B.MAX_PDF_PAGES] if ok else None
+    return pages[:_page_cap()] if ok else None
 
 
 async def _load_pages(context, files: list[dict]) -> list[bytes]:
@@ -1690,7 +1696,7 @@ async def process_order(job: dict) -> None:
             pages = await _load_pages(context, group)
             if not pages:
                 raise RuntimeError("sahifa topilmadi")
-            pdf = B.pdf_utils.build_pdf(pages[:B.MAX_PDF_PAGES])
+            pdf = B.pdf_utils.build_pdf(pages[:_page_cap()])
             await B._process_pdf(None, context, pdf, status, chat_id=o["uid"], src_name=name, ref=ref,
                                         rendered=_rendered(pages, group))
         except Exception:

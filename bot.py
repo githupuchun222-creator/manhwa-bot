@@ -1707,9 +1707,10 @@ async def _process_pdf(update: Update | None, context: ContextTypes.DEFAULT_TYPE
         await status_msg.edit_text(str(exc))
         return
 
-    limit = min(total, MAX_PDF_PAGES)
+    # tayyor sahifalarda juda uzun PDF sahifa bo'laklarga bo'lingan bo'lishi mumkin (pdf_utils.MAX_TILES)
+    limit = min(total, MAX_PDF_PAGES * (pdf_utils.MAX_TILES if rendered else 1))
     logger.info("PDF: %d sahifa, %d tasi ishlanadi", total, limit)
-    note = "" if total <= MAX_PDF_PAGES else (
+    note = "" if total <= limit else (
         f"\n(Bir martada eng ko'pi {MAX_PDF_PAGES} sahifa — qolganini alohida yuboring.)"
     )
     await _edit_status(status_msg, f"PDF qabul qilindi: {total} sahifa.\n"

@@ -26,6 +26,8 @@ _PDFIUM = threading.RLock()
 RENDER_WIDTH = 1100
 # Juda uzun webtoon sahifasi xotirani to'ldirmasligi uchun balandlik chegarasi
 RENDER_MAX_HEIGHT = 20000
+# Juda uzun sahifa ko'pi bilan shuncha bo'lakka bo'linadi (sahifa limiti ham shuncha marta oshadi)
+MAX_TILES = 2
 # Bitta so'rovda nechta sahifa ishlanadi (har biri ~30-120 sekund)
 DEFAULT_MAX_PAGES = 10
 
@@ -83,8 +85,12 @@ def render_pages(pdf_bytes: bytes, max_pages: int = DEFAULT_MAX_PAGES):
                     try:
                         width, height = page.get_size()
                         scale = _render_scale(width, height)
-                        # RENDER_MAX_HEIGHT dan baland bo'lsa - teng bo'laklar (xotira uchun), har biri alohida rasm
-                        n = max(1, math.ceil(height * scale / RENDER_MAX_HEIGHT))
+                        # Xotira chegarasi maydon bo'yicha (1100x20000 px); undan katta bo'lsa - teng bo'laklar, har biri
+                        # alohida rasm. Bo'laklar soni <= MAX_TILES: bob sahifa limiti (MAX_PDF_PAGES) bo'laklarga yetsin.
+                        cap = RENDER_WIDTH * RENDER_MAX_HEIGHT
+                        if width * height * scale * scale > MAX_TILES * cap:
+                            scale = math.sqrt(MAX_TILES * cap / (width * height))
+                        n = min(MAX_TILES, max(1, math.ceil(width * height * scale * scale / cap - 1e-9)))
                         step = height / n
                         images = [page.render(scale=scale, crop=(0, height - (k + 1) * step, 0, k * step))
                                   .to_pil().convert("RGB") for k in range(n)]
