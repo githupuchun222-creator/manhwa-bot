@@ -1590,14 +1590,6 @@ def _is_sfx(item: dict, page_line_h: float | None, image_h: int) -> bool:
     return lh >= max(90, image_h * 0.06) and letters <= 8
 
 
-def _lama_ready() -> bool:
-    try:
-        import lama
-        return lama.available()
-    except Exception:
-        return False
-
-
 def _same_text(a: str, b: str) -> bool:
     """Tarjima asl yozuv bilan bir xilmi (faqat harf/raqam, katta-kichikligi hisobga olinmaydi)."""
     norm = lambda t: "".join(c for c in (t or "").upper() if c.isalnum())
@@ -1917,11 +1909,13 @@ def render_translation(image_bytes: bytes, translations: list[dict], quality: in
             # "TOP-UP" joyida qolib, ostiga mayda izoh yozilgan - xato deb topildi). Pufakchada, tekis
             # fonda va (LaMa modeli bo'lsa) rasm ustida ham asl yozuv o'chirilib, tarjima shu joyga
             # shu kattalikda yoziladi. Faqat model yo'q bo'lsa rasm ustidagi effekt avvalgidek qoladi.
-            replace = FONT_STYLES and (_sfx_in_bubble(arr, box, line_h)
-                                       or _flat_bg(arr, box) is not None or _lama_ready())
-            if not replace:
+            if not FONT_STYLES:
                 jobs.append(("sfx", box, None, uzbek_text, line_h))
                 tboxes.append(box)
+                continue
+            if not _sfx_in_bubble(arr, box, line_h):
+                # 2026-10-20 (egasi: "ovozli yozuvlarni o'chirmasin"): pufakchadan tashqaridagi tovush effekti
+                # joyida, tarjimasiz qoladi - rasm buzilmaydi, sekin LaMa o'chirishga vaqt ketmaydi
                 continue
 
         bg_color = _dominant_color(image.crop(box))

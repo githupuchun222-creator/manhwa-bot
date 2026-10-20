@@ -18,14 +18,50 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 MODEL = Path(os.getenv("LAMA_MODEL", Path(__file__).resolve().parent / "assets" / "models" / "lama_fp32.onnx"))
+# INPAINT=migan (2026-10-20): kichik/o'rta yozuvni MI-GAN o'chiradi (assets/models/migan_pipeline_v2.onnx, 28 MB,
+# HF andraniksargsyan/migan) - protsessorda ~5x tez, oddiy fonda sifat bir xil. Katta joyda (bezakli sarlavha) MI-GAN
+# rasmga yo'q narsa chizardi - niqob MIGAN_MAX pikseldan katta bo'lsa LaMa ishlaydi.
+MIGAN_MODEL = Path(os.getenv("MIGAN_MODEL", MODEL.with_name("migan_pipeline_v2.onnx")))
+MIGAN = os.getenv("INPAINT", "lama") == "migan" and MIGAN_MODEL.exists()
+MIGAN_MAX = int(os.getenv("MIGAN_MAX", "20000"))
 SIZE = 512
 _lock = threading.Lock()          # bir vaqtda bitta chaqiruv (protsessor va xotira uchun)
 _session = None
+_migan = None
 _failed = False
 
 
 def available() -> bool:
     return not _failed and os.getenv("LAMA", "1") != "0" and MODEL.exists() and MODEL.stat().st_size > 50_000_000
+
+
+def _opts():
+    import onnxruntime as ort
+
+    opt = ort.SessionOptions()
+            # LAMA_THREADS bilan o'zgartiriladi. Standart - yadrolarning yarmi: GitHub'da (4 vCPU = 2 haqiqiy
+            # yadro) 4 oqim berilganda yozish bosqichi 2 barobar SEKINLASHDI (2026-10-04 o'lchovi).
+    opt.intra_op_num_threads = int(os.getenv("LAMA_THREADS", "0")) or max(
+        2, min(6, (os.cpu_count() or 4) // 2))
+    opt.log_severity_level = 3
+    # Bo'sh oqimlar aylanib kutmasin: aks holda LaMa tugagach ham yadrolarni band qilib,
+    # yonidagi OCR/chizish (ikkinchi bob) sekinlashadi. LAMA_SPIN=1 - eskicha.
+    if os.getenv("LAMA_SPIN", "0") != "1":
+        opt.add_session_config_entry("session.intra_op.allow_spinning", "0")
+    return opt
+
+
+def _get_migan():
+    global _migan, MIGAN
+    if _migan is None and MIGAN:
+        try:
+            import onnxruntime as ort
+            _migan = ort.InferenceSession(str(MIGAN_MODEL), sess_options=_opts(), providers=["CPUExecutionProvider"])
+            logger.info("MI-GAN modeli yuklandi")
+        except Exception as exc:
+            MIGAN = False                      # hammasi LaMa bilan davom etadi
+            logger.warning("MI-GAN yuklanmadi: %s", exc)
+    return _migan
 
 
 def _get():
@@ -34,17 +70,7 @@ def _get():
         try:
             import onnxruntime as ort
 
-            opt = ort.SessionOptions()
-            # LAMA_THREADS bilan o'zgartiriladi. Standart - yadrolarning yarmi: GitHub'da (4 vCPU = 2 haqiqiy
-            # yadro) 4 oqim berilganda yozish bosqichi 2 barobar SEKINLASHDI (2026-10-04 o'lchovi).
-            opt.intra_op_num_threads = int(os.getenv("LAMA_THREADS", "0")) or max(
-                2, min(6, (os.cpu_count() or 4) // 2))
-            opt.log_severity_level = 3
-            # Bo'sh oqimlar aylanib kutmasin: aks holda LaMa tugagach ham yadrolarni band qilib,
-            # yonidagi OCR/chizish (ikkinchi bob) sekinlashadi. LAMA_SPIN=1 - eskicha.
-            if os.getenv("LAMA_SPIN", "0") != "1":
-                opt.add_session_config_entry("session.intra_op.allow_spinning", "0")
-            _session = ort.InferenceSession(str(MODEL), sess_options=opt, providers=["CPUExecutionProvider"])
+            _session = ort.InferenceSession(str(MODEL), sess_options=_opts(), providers=["CPUExecutionProvider"])
             logger.info("LaMa modeli yuklandi")
         except Exception as exc:
             _failed = True
@@ -67,11 +93,17 @@ def _infer(x: np.ndarray, m: np.ndarray) -> np.ndarray | None:
     return sess.run(None, {"image": x, "mask": m})[0][0]
 
 
-def _run(crop: np.ndarray, mask: np.ndarray) -> np.ndarray | None:
+def _run(crop: np.ndarray, mask: np.ndarray, migan: bool = False) -> np.ndarray | None:
     """crop: HxWx3 uint8 (RGB), mask: HxW bool. Qaytaradi: shu o'lchamdagi to'ldirilgan rasm."""
     import cv2
 
     h, w = mask.shape
+    sess = _get_migan() if migan else None
+    if sess is not None:  # pipeline o'zi niqob atrofini kesib 512 ga keltirib joyiga qo'yadi; niqobda 0 = o'chiriladi
+        m = cv2.dilate(mask.astype(np.uint8), np.ones((3, 3), np.uint8))
+        out = sess.run(None, {"image": np.ascontiguousarray(crop.transpose(2, 0, 1))[None],
+                              "mask": ((1 - m) * 255).astype(np.uint8)[None, None]})[0][0]
+        return out.transpose(1, 2, 0)
     img = cv2.resize(crop, (SIZE, SIZE), interpolation=cv2.INTER_AREA if max(h, w) > SIZE else cv2.INTER_CUBIC)
     m = cv2.resize(mask.astype(np.uint8), (SIZE, SIZE), interpolation=cv2.INTER_NEAREST)
     m = cv2.dilate(m, np.ones((3, 3), np.uint8))
@@ -101,8 +133,9 @@ def inpaint(arr: np.ndarray, box: tuple[int, int, int, int], mask: np.ndarray) -
         mx1, my1, mx2, my2 = x1 + xs.min(), y1 + ys.min(), x1 + xs.max() + 1, y1 + ys.max() + 1
         mw, mh = mx2 - mx1, my2 - my1
         # Uzun yozuv kvadratga yaqin bo'laklarga bo'linadi (model 512x512 - cho'zilsa sifat tushadi)
+        migan = MIGAN and int(mask.sum()) <= MIGAN_MAX
         side = int(max(mh * 3.0, 420))
-        if mw <= side * 2.5:
+        if mw <= side * 2.5 and not migan:     # MI-GAN cho'zilgan bo'lakda chiziq qoldiradi - unda bo'linadi
             # bitta bo'lak: model baribir 512x512 ga keltiradi; orqa fon ustiga tarjima yoziladi -
             # ozgina cho'zilish sezilmaydi, vaqt esa 2-3 barobar kam
             side = mw
@@ -131,7 +164,7 @@ def inpaint(arr: np.ndarray, box: tuple[int, int, int, int], mask: np.ndarray) -
                 cx1, cx2 = max(0, sx - pad), min(W, ex + pad)
                 # bo'lakdan tashqaridagi yozuv ham yopiladi (model uni ko'rib, qayta chizib qo'ymasin)
                 sub_mask = full[:, cx1 - RX1:cx2 - RX1].copy()
-                out = _run(arr[RY1:RY2, cx1:cx2], sub_mask)
+                out = _run(arr[RY1:RY2, cx1:cx2], sub_mask, migan)
                 if out is None:
                     return False
                 wgt = np.zeros((RY2 - RY1, cx2 - cx1), np.float32)

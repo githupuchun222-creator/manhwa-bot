@@ -430,6 +430,7 @@ async def main() -> None:
             admins.READONLY["on"] = pool.ready() and not receiver
             pool.state["receiver"] = receiver
             pool.state["draining"] = old
+            bot.relay.DRAINING["on"] = bool(old)
             if (receiver and not old and bot.shop.ENABLED and pool.ready()
                     and time.time() - last_lost > LOST_EVERY):
                 last_lost = time.time()
@@ -446,7 +447,7 @@ async def main() -> None:
                 pool_task = asyncio.create_task(pool.run(app.bot, bot.PARALLEL_JOBS, bot.shop.run_pool_chapter,
                                                          bot.shop.apply_pool_results))
             local_busy = bool(items) or got_direct or bool(bot._waiting) or bool(bot._current["job"])
-            busy = local_busy or pool.busy()
+            busy = local_busy or pool.busy() or (old and bot.relay.busy())
             if busy:
                 last_activity = time.time()
             if not busy and app.update_queue.empty() and (old or time.time() - last_activity > IDLE_EXIT):

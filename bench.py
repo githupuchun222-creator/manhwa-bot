@@ -169,7 +169,7 @@ def main() -> None:
         d = draw_cfgs[0]
         for th in a.lama.split(","):
             os.environ["LAMA_THREADS"] = th
-            lama._session = None
+            lama._session = lama._migan = None
             lama._get()                                    # yuklash vaqti o'lchovga kirmasin
             work = [(j, [dict(i) for i in items]) for j, items in zip(pages, per_page)]
             t = time.perf_counter()

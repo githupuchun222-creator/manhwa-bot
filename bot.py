@@ -355,7 +355,7 @@ async def on_menu_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             "✍️ Paket beriladigan odamning @username'ini yoki ID raqamini yuboring - "
             "keyin paketni tanlaysiz.\nBekor qilish: /start" if admins.PACKS_ON and not admins.SUBS_TOO else
             "✍️ Obunachining @username'ini yoki ID raqamini yuboring - "
-            f"keyin muddatni tanlaysiz ({admins.SUB_WEEK_DAYS} yoki {admins.SUB_DAYS} kun)."
+            "keyin tarif va muddatni tanlaysiz."
             "\nBekor qilish: /start")
         return
     if what == "qoida":
@@ -845,7 +845,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         group = msg.media_group_id
         if not (group and _daily_groups.get(user_id) == group):
             if admins.daily_blocked(user_id):
-                await msg.reply_text(daily_limit_text(), parse_mode="HTML")
+                await send_tariffs(context.bot, msg.chat_id)
+                await msg.reply_text(daily_limit_text(user_id), parse_mode="HTML")
                 return
             if not over:
                 admins.add_daily(user_id)
@@ -865,6 +866,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 bal_charged = True
             elif admins.free_left(user_id) <= 0:
                 text, markup = _sub_panel(user_id)
+                await send_tariffs(context.bot, msg.chat_id)
                 await msg.reply_text(text, reply_markup=markup, parse_mode="HTML")
                 await _ask_owner_to_pay(context, update.effective_user)
                 if daily:
@@ -1006,19 +1008,14 @@ def _sub_panel(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
     if admins.PACKS_ON and not admins.SUBS_TOO:
         return _pack_panel(user_id)
     until = admins.sub_until(user_id)
-    old = f"<s>{SUB_OLD_PRICE}</s> " if SUB_OLD_PRICE else ""
-    oldw = f"<s>{SUB_WEEK_OLD_PRICE}</s> " if SUB_WEEK_OLD_PRICE else ""
     if until > time.time():
-        status = f"✅ Obunangiz faol: <b>{_date(until)}</b> gacha."
+        status = f"✅ Obunangiz faol: <b>{admins.tier_name(user_id)}</b>, <b>{_date(until)}</b> gacha."
     elif until:
         status = "⌛ Obunangiz tugagan."
     else:
         left = max(0, admins.FREE_CHAPTERS - admins.used_chapters(user_id))
         status = f"🎁 Bepul boblar qoldi: <b>{left}</b> ta."
-    text = (f"💳 <b>Obuna</b>\n\n" + _owner_line()
-            + (f"🔥 <b>Kunlik</b> - {SUB_DAY_PRICE} / {admins.SUB_DAY_DAYS} kun\n" if SUB_DAY_PRICE else "")
-            + f"🔥 <b>Haftalik</b> - {oldw}{SUB_WEEK_PRICE} / {admins.SUB_WEEK_DAYS} kun\n"
-            f"🔥 <b>Oylik</b> - {old}{SUB_PRICE} / {admins.SUB_DAYS} kun\n"
+    text = (f"💳 <b>Obuna</b>\n\n" + _owner_line() + admins.tier_block() + "\n"
             f"• Obuna muddati davomida har bob uchun alohida to'lamaysiz\n"
             f"• Obunani istalgan vaqt uzaytirish mumkin\n"
             + (f"\n📦 <b>Yoki bob paketi</b> (muddatsiz, boblar tugaguncha):\n{admins.pack_block()}\n"
@@ -1063,12 +1060,15 @@ async def _ask_owner_to_pay(context, user) -> None:
         logger.warning("Egasiga to'lov xabari yuborilmadi: %s", exc)
 
 
+def _tier_rows(target: int) -> list:
+    """Admin uchun: har tarif bitta qator - 1 kun / 1 hafta / 1 oy (paid<muddat><tarif>:<id>)."""
+    return [[_btn(f"✅ {name} {label}", f"paid{term}{t}:{target}") for term, (_, label, _) in admins.TERMS.items()]
+            for t, (name, _, _) in admins.TIERS.items()]
+
+
 def _grant_rows(target: int) -> list:
-    """Admin uchun: nima berish mumkin - obuna muddatlari va/yoki bob paketlari."""
-    subs = ([[InlineKeyboardButton(f"✅ 1 kun ({SUB_DAY_PRICE})", callback_data=f"paidd:{target}")]]
-            if SUB_DAY_PRICE else []) + [
-            [InlineKeyboardButton(f"✅ 1 hafta ({SUB_WEEK_PRICE})", callback_data=f"paidw:{target}")],
-            [InlineKeyboardButton(f"✅ 1 oy ({SUB_PRICE})", callback_data=f"paid:{target}")]]
+    """Admin uchun: nima berish mumkin - obuna tariflari va/yoki bob paketlari."""
+    subs = _tier_rows(target)
     if not admins.PACKS_ON:
         return subs
     return (subs if admins.SUBS_TOO else []) + [_pack_buttons(target)]
@@ -1099,8 +1099,10 @@ async def on_paid_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     await query.answer()
     action, _, raw = query.data.partition(":")
-    days = {"paidw": admins.SUB_WEEK_DAYS, "paidd": admins.SUB_DAY_DAYS}.get(action)
-    await _set_paid(context, int(raw), action in ("paid", "paidw", "paidd"), query=query, days=days)
+    # paid<muddat d|w|m><tarif s|p|v>; eski tugmalar (paid, paidw, paidd) - tarifsiz: joriy tarif saqlanadi
+    term = next((c for c in action[4:] if c in "dwm"), "m")
+    tier = next((c for c in action[4:] if c in admins.TIERS), None)
+    await _set_paid(context, int(raw), action != "unpaid", query=query, days=admins.TERMS[term][2], tier=tier)
 
 
 async def _label(context, uid: int) -> str:
@@ -1113,7 +1115,7 @@ async def _label(context, uid: int) -> str:
 
 
 async def _set_paid(context, target: int, grant: bool, query=None, message=None, n: int = 0,
-                    days: int | None = None) -> None:
+                    days: int | None = None, tier: str | None = None) -> None:
     who = await _label(context, target)
     # paket (balansga N ta bob): paket rejimida yoki aralash rejimda paket tugmasi/buyrug'i bosilganda
     if admins.PACKS_ON and (n or not admins.SUBS_TOO):
@@ -1138,13 +1140,26 @@ async def _set_paid(context, target: int, grant: bool, query=None, message=None,
             await message.reply_text(text)
         return
     if grant:
-        until = admins.add_paid(target, days)
-        label = f"{days} kunlik" if days else f"{admins.SUB_DAYS} kunlik"
-        text = f"✅ {who} ({target}) - {label} berildi, obuna {_date(until)} gacha."
+        days = days or admins.SUB_DAYS
+        until = admins.add_paid(target, days, tier)
+        t = admins.sub_tier(target)
+        name, lim, _ = admins.TIERS[t]
+        term = next((k for k, v in admins.TERMS.items() if v[2] == days), "m")
+        price = admins.money(admins.tier_price(t, term))
+        start = until - days * 86400
+        text = (f"✅ {who} ({target}) - {name}, {admins.TERMS[term][0].lower()} ({price}) berildi: "
+                f"{_date(start)} - {_date(until)}, kuniga {lim} bob.")
+        if t == "v":
+            text += "\n👑 VIP: unga QO'SHIMCHA BOTni bering va foydalanishni tushuntiring."
         try:
             await context.bot.send_message(
-                target, f"✅ To'lovingiz qabul qilindi! Obuna faol: {_date(until)} gacha.\n"
-                        "Endi har bob uchun alohida to'lamasdan foydalanishingiz mumkin - bobning PDF faylini yoki rasmlarini yuboring.")
+                target, "Assalomu alaykum! To'lovingiz tasdiqlandi.\n\n"
+                        f"Tarif: <b>{name}</b>\nMuddat: <b>{admins.TERMS[term][0].lower()}</b>\n"
+                        f"Narxi: <b>{price}</b>\nKunlik tarjima limiti: <b>{lim} ta bobgacha</b>\n"
+                        f"Obuna boshlanishi: <b>{_date(start)}</b>\nObuna tugashi: <b>{_date(until)}</b>\n"
+                        + ("\n👑 Obuna muddati davomida foydalanishingiz uchun qo'shimcha bot ham taqdim etiladi - "
+                           "admin tez orada yuboradi.\n" if t == "v" else "")
+                        + "\nBobning PDF faylini yoki rasmlarini yuboring.", parse_mode="HTML")
         except TelegramError:
             text += "\n(unga xabar yetib bormadi - u botga hali /start bosmagan bo'lishi mumkin)"
     else:
@@ -1180,7 +1195,8 @@ async def paid_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         n = int(context.args[1]) if len(context.args) > 1 and context.args[1].isdigit() else 0
         if "paket" in cmd and admins.PACKS_ON:
             n = n or admins.PACKS[0][0]          # aralash rejimda /paket - obuna emas, balans
-        await _set_paid(context, target, grant, message=update.effective_message, n=n, days=days)
+        tier = next((t for t, v in admins.TIERS.items() for a in context.args[1:] if a.lower() == v[0].lower()), None)
+        await _set_paid(context, target, grant, message=update.effective_message, n=n, days=days, tier=tier)
         return
     if not grant:
         await update.effective_message.reply_text(
@@ -1214,20 +1230,22 @@ async def paid_list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     for uid, until in admins.list_paid():
         who = await _label(context, uid)
         if until > now:
-            lines.append(f"✅ {who} - {_date(until)} gacha ({int((until - now) // 86400)} kun qoldi)")
+            lines.append(f"✅ {who} - {admins.tier_name(uid)}, {_date(until)} gacha "
+                         f"({int((until - now) // 86400)} kun qoldi)")
         else:
             lines.append(f"⌛ {who} - tugagan ({_date(until)})")
-        buttons.append(([InlineKeyboardButton("+1 kun", callback_data=f"paidd:{uid}")] if SUB_DAY_PRICE else [])
-                       + [InlineKeyboardButton(f"🔁 +1 hafta: {who}"[:40], callback_data=f"paidw:{uid}"),
-                        InlineKeyboardButton("+1 oy", callback_data=f"paid:{uid}"),
+        t = admins.sub_tier(uid)              # uzaytirish - shu tarifda
+        buttons.append([InlineKeyboardButton("+1 kun", callback_data=f"paidd{t}:{uid}"),
+                        InlineKeyboardButton(f"🔁 +1 hafta: {who}"[:40], callback_data=f"paidw{t}:{uid}"),
+                        InlineKeyboardButton("+1 oy", callback_data=f"paidm{t}:{uid}"),
                         InlineKeyboardButton("🗑", callback_data=f"unpaid:{uid}")])
     buttons.append([_btn("➕ Odam qo'shish", "m:do:subadd")])
     await update.effective_message.reply_text(
-        f"📅 <b>Obunachilar</b>\n({'kunlik ' + SUB_DAY_PRICE + ' · ' if SUB_DAY_PRICE else ''}"
-        f"haftalik {SUB_WEEK_PRICE} · oylik {SUB_PRICE})\n\n" + ("\n".join(html.escape(x) for x in lines) or "Hozircha hech kim.") +
+        f"📅 <b>Obunachilar</b>\n\n" + ("\n".join(html.escape(x) for x in lines) or "Hozircha hech kim.") +
         "\n\nQo'shish: tugmani bosib @username yoki ID yuboring.\n"
         "Buyruq bilan: " + ("/kunlik @username · " if SUB_DAY_PRICE else "")
-        + "/haftalik @username · /oylik @username · /oylikolish @username",
+        + "/haftalik @username · /oylik @username · /oylikolish @username\n"
+        "Tarif bilan: /oylik @username premium (yoki vip; yozilmasa - Standard yoki joriy tarif)",
         reply_markup=InlineKeyboardMarkup(buttons), parse_mode="HTML")
 
 
@@ -1278,8 +1296,27 @@ def _after_markup() -> InlineKeyboardMarkup | None:
 _daily_groups: dict[int, str] = {}     # kunlik hisobga olingan albom (foydalanuvchi -> id)
 
 
-def daily_limit_text() -> str:
-    return (f"⛔ <b>Bugungi obuna limiti tugadi</b> ({admins.DAILY_LIMIT} bob).\n"
+TARIFF_IMG = Path(__file__).resolve().parent / "assets" / "tariflar.jpg"
+_tariff_id: str | None = None
+
+
+async def send_tariffs(bot, chat_id: int) -> bool:
+    """Tariflar rasmi (egasi tayyorlagan, 2026-10-20) - obuna/limit ekranidan oldin. Birinchi yuklashdan keyin file_id."""
+    global _tariff_id
+    if not TARIFF_IMG.exists():
+        return False
+    try:
+        sent = await bot.send_photo(chat_id, _tariff_id or TARIFF_IMG.read_bytes())
+        _tariff_id = sent.photo[-1].file_id
+        return True
+    except TelegramError as exc:
+        logger.warning("Tariflar rasmi yuborilmadi: %s", exc)
+        return False
+
+
+def daily_limit_text(user_id: int) -> str:
+    return (f"⛔ <b>Bugungi obuna limiti tugadi</b> ({admins.daily_limit(user_id)} bob, "
+            f"{admins.tier_name(user_id)}).\n"
             "Ertaga Toshkent vaqti bilan 00:00 da yangilanadi.\n\n"
             "📦 Hoziroq davom etish uchun <b>paket</b> oling - paket bilan kunlik cheklov yo'q:\n"
             + admins.pack_block() + "\n\nTo'lov uchun adminga yozing (💰 Narxlar va shartlar).")
@@ -1615,33 +1652,25 @@ async def _chapter_batch(pages, limit: int, budget: dict, status_msg, t0: float,
     # bo'shatib qo'yardi.
     page_sem = asyncio.Semaphore(PAGE_OCR_WORKERS)
 
+    ready = [asyncio.Event() for _ in pages]
+
     async def read_one(idx: int, num: int, jpeg: bytes) -> None:
-        async with page_sem, _ai_semaphore:
-            _check_cancel()
-            try:
-                reads[idx] = await asyncio.to_thread(read_page, jpeg, "image/jpeg", budget)
-            except TranslationError as exc:
-                logger.warning("PDF %d-sahifa o'qilmadi: %s", num, exc)
-                reads[idx] = []
-                failed.append(num)
+        try:
+            async with page_sem, _ai_semaphore:
+                _check_cancel()
+                try:
+                    reads[idx] = await asyncio.to_thread(read_page, jpeg, "image/jpeg", budget)
+                except TranslationError as exc:
+                    logger.warning("PDF %d-sahifa o'qilmadi: %s", num, exc)
+                    reads[idx] = []
+                    failed.append(num)
+        finally:
+            ready[idx].set()
         progress["n"] += 1
         elapsed = int(time.time() - t0)
         await _edit_status(status_msg, f"O'qilmoqda: {progress['n']}/{len(pages)}-sahifa "
                                        f"({elapsed // 60}:{elapsed % 60:02d} o'tdi)", soft=True)
 
-    await asyncio.gather(*(read_one(i, num, jpeg) for i, (num, _total, jpeg) in enumerate(pages)))
-    _check_cancel()
-    await _edit_status(status_msg, "Butun bob tarjima qilinmoqda (AI)...")
-    flat = []
-    for page_no, read in enumerate(reads):
-        for item in read:
-            item["_page"] = page_no
-            flat.append(item)
-    done = await asyncio.to_thread(finish_page, flat) if flat else []
-    per_page: list[list[dict]] = [[] for _ in reads]
-    for item in done:
-        per_page[item.pop("_page")].append(item)
-    await _edit_status(status_msg, "Sahifalarga yozilmoqda...")
     # Chizish ham xotira ham CPU talab qiladi: parallel ish ko'p bo'lsa, har ishda kamroq
     # sahifa bir vaqtda chiziladi (jami ~8 ta sahifa - xotira to'lib ketmasin).
     # DRAW_PAGES (2026-10-11, telefon): PARALLEL_JOBS=1 da bu yerda 8 sahifa BIRGA chizilardi - telefonda
@@ -1658,7 +1687,43 @@ async def _chapter_batch(pages, limit: int, budget: dict, status_msg, t0: float,
             _check_cancel()
             return await asyncio.to_thread(render_translation, jpeg, items, PDF_JPEG_QUALITY, report)
 
-    out = await asyncio.gather(*(draw(jpeg, items) for (_, _, jpeg), items in zip(pages, per_page)))
+    # QUVUR (2026-10-20): tarjima tarmoqni kutadi (Gemini 503/timeout bilan bobning ~1/3 vaqti), OCR va
+    # chizish esa CPU. Endi o'qilgan sahifalar TARTIB bilan ~GEMINI_CHUNK qatorlik guruhda tarjimaga
+    # ketadi (ketma-ket - kontekst va ismlar saqlanadi), tarjima qilingan sahifa darhol chiziladi.
+    per_page: list[list[dict]] = [[] for _ in reads]
+    draws: list[asyncio.Task] = []
+
+    async def translate_group(group: list[int]) -> None:
+        flat = []
+        for page_no in group:
+            for item in reads[page_no] or []:
+                item["_page"] = page_no
+                flat.append(item)
+        done = await asyncio.to_thread(finish_page, flat) if flat else []
+        for item in done:
+            per_page[item.pop("_page")].append(item)
+        for page_no in group:
+            draws.append(asyncio.create_task(draw(pages[page_no][2], per_page[page_no])))
+
+    readers = [asyncio.create_task(read_one(i, num, jpeg)) for i, (num, _total, jpeg) in enumerate(pages)]
+    try:
+        group: list[int] = []
+        lines = 0
+        for idx in range(len(pages)):
+            await ready[idx].wait()
+            _check_cancel()
+            group.append(idx)
+            lines += len(reads[idx] or [])
+            if lines >= uz_translate.GEMINI_CHUNK or idx == len(pages) - 1:
+                if idx == len(pages) - 1:
+                    await _edit_status(status_msg, "Tarjima qilinib, sahifalarga yozilmoqda...")
+                await translate_group(group)
+                group, lines = [], 0
+        await asyncio.gather(*readers)          # o'qishdagi kutilmagan xato yashirinib qolmasin
+        out = await asyncio.gather(*draws)
+    finally:
+        for t in readers + draws:
+            t.cancel()
     return list(out), sum(len(i) for i in per_page), failed
 
 
@@ -2131,7 +2196,7 @@ def _build_app(token: str) -> Application:
     app.add_handler(CallbackQueryHandler(on_menu_button, pattern=r"^m:"))
     app.add_handler(CallbackQueryHandler(shop.on_button, pattern=r"^sh:"))
     app.add_handler(CallbackQueryHandler(broadcast.on_user_button, pattern=r"^bc:"))
-    app.add_handler(CallbackQueryHandler(on_paid_button, pattern=r"^(paid|paidw|paidd|unpaid):\d+$"))
+    app.add_handler(CallbackQueryHandler(on_paid_button, pattern=r"^(paid[dwm]?[spv]?|unpaid):\d+$"))
     app.add_handler(CallbackQueryHandler(on_pack_button, pattern=r"^pack:\d+:\d+$"))
     app.add_handler(CallbackQueryHandler(on_rule_delete, pattern=r"^rdel:\d+$"))
     app.add_handler(CallbackQueryHandler(on_admin_button, pattern=r"^(allow|deny|remove):"))

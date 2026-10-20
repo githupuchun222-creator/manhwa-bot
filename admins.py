@@ -357,7 +357,7 @@ def list_paid() -> list[tuple[int, float]]:
     return sorted(((int(k), float(v)) for k, v in _load().get("subs", {}).items()), key=lambda x: -x[1])
 
 
-def add_paid(user_id: int, days: int | None = None) -> float:
+def add_paid(user_id: int, days: int | None = None, tier: str | None = None) -> float:
     """Obuna qo'shadi/uzaytiradi: tugamagan bo'lsa - tugash sanasiga, aks holda hozirdan +N kun."""
     data = _load()
     subs = _subs(data)
@@ -366,6 +366,8 @@ def add_paid(user_id: int, days: int | None = None) -> float:
     subs[str(user_id)] = start + (days or SUB_DAYS) * 86400
     # OBUNA TURI (2026-10-02): ilova hisobi faqat OYLIK obunachiga beriladi. Haftalik (<=10 kun) -
     # "week"; faol oylik obunaga hafta qo'shilsa ham oylik bo'lib qoladi.
+    if tier:
+        data.setdefault("subt", {})[str(user_id)] = tier     # oxirgi sotib olingan tarif amal qiladi
     kinds = data.setdefault("subk", {})
     week = bool(days) and days <= 10
     if not (week and active and kinds.get(str(user_id)) == "month"):
@@ -399,6 +401,7 @@ def remove_paid(user_id: int) -> bool:
         return False
     del subs[str(user_id)]
     data.get("subk", {}).pop(str(user_id), None)
+    data.get("subt", {}).pop(str(user_id), None)
     _save(data)
     return True
 
@@ -428,6 +431,43 @@ def find_user(text: str) -> int | None:
 # qildira olmasin"). Kun - Toshkent vaqti bo'yicha (00:00 da yangilanadi). Adminlar cheklanmaydi.
 DAILY_LIMIT = int(os.getenv("DAILY_LIMIT", "0") or 0)
 
+# TARIFLAR (2026-10-20, egasining "Obunalarni rasmiylashtirish" qo'llanmasi): kunlik limit MUDDATGA emas, TARIFGA
+# bog'liq. Narx (so'm): kunlik / haftalik / oylik. "subt": {id: "s"|"p"|"v"}; tarifi yozilmagan eski obuna - Standard.
+# DAILY_LIMIT=0 bo'lsa limit umuman yo'q (eski xatti-harakat), aks holda limit shu jadvaldan olinadi.
+TIERS = {
+    "s": ("Standard", 125, (5000, 15000, 35000)),
+    "p": ("Premium", 225, (12000, 22000, 45000)),
+    "v": ("VIP", 300, (18000, 35000, 70000)),
+}
+TERMS = {"d": ("Kunlik", "1 kun", SUB_DAY_DAYS), "w": ("Haftalik", "1 hafta", SUB_WEEK_DAYS),
+         "m": ("Oylik", "1 oy", SUB_DAYS)}
+
+
+def sub_tier(user_id: int) -> str:
+    return _load().get("subt", {}).get(str(user_id), "s")
+
+
+def tier_name(user_id: int) -> str:
+    return TIERS[sub_tier(user_id)][0]
+
+
+def daily_limit(user_id: int) -> int:
+    return TIERS[sub_tier(user_id)][1] if DAILY_LIMIT else 0
+
+
+def tier_price(tier: str, term: str) -> int:
+    return TIERS[tier][2]["dwm".index(term)]
+
+
+def tier_block() -> str:
+    """Foydalanuvchiga: tariflar jadvali (HTML)."""
+    lines = []
+    for t, (name, lim, prices) in TIERS.items():
+        lines.append(f"{'⭐' if t == 's' else '💎' if t == 'p' else '👑'} <b>{name}</b> - kuniga {lim} bobgacha"
+                     + (" + obuna davomida qo'shimcha bot" if t == "v" else "") + "\n"
+                     + " · ".join(f"{TERMS[k][0].lower()} {money(p)}" for k, p in zip("dwm", prices)))
+    return "\n".join(lines) + "\n• Limit muddatga emas, tarifga bog'liq (haftalik Standard ham kuniga 125 bob)"
+
 
 def _today() -> str:
     return _time.strftime("%Y-%m-%d", _time.gmtime(_time.time() + 5 * 3600))
@@ -454,7 +494,7 @@ def add_daily(user_id: int, delta: int = 1) -> int:
 # faqat obuna hisobidan ketgan boblar yoziladi. Paket boblari cheklanmaydi (har biri uchun to'langan); obunachi
 # chegaraga yetsa, paket balansi bo'lsa o'shandan davom etadi, bo'lmasa paket taklif qilinadi.
 def sub_over_daily(user_id: int) -> bool:
-    return bool(DAILY_LIMIT) and not free_use(user_id) and is_paid(user_id) and daily_used(user_id) >= DAILY_LIMIT
+    return bool(DAILY_LIMIT) and not free_use(user_id) and is_paid(user_id) and daily_used(user_id) >= daily_limit(user_id)
 
 
 def daily_blocked(user_id: int) -> bool:

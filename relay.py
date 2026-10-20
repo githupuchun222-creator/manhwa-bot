@@ -79,8 +79,15 @@ def _patches(base: bytes, out: bytes):
 
 # ------------------------------------------------------------------ server tomoni
 _store: dict[str, dict] = {}
+DRAINING = {"on": False}       # runner: qayta yonish oldidan - yangi bob berilmaydi, boshlanganlari qabul qilinadi
 _loop = None
 _bot = None
+
+
+def busy(max_age: int = 3600) -> bool:
+    """Yordamchiga berilgan, hali yuborilmagan yangi bob bormi. Server qayta yonsa _store yo'qoladi (yordamchi
+    ishi 410 bilan behuda ketadi, 2026-10-20) - drenaj shularni ham kutadi; eski (osilib qolgan) yozuv kutilmaydi."""
+    return any(time.time() - st["t"] < max_age for st in _store.values())
 
 
 async def _prepare(ref: str, files: list[dict]) -> tuple[dict, list[bytes]]:
@@ -186,6 +193,13 @@ class _H(BaseHTTPRequestHandler):
         data = self.rfile.read(int(self.headers.get("content-length") or 0))
         try:
             head, blobs = unpack(data)
+            if self.path == "/pages" and DRAINING["on"]:
+                body = pack({"error": "server qayta yonmoqda - bob navbatga qaytsin"}, [])
+                self.send_response(503)
+                self.send_header("content-length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             if self.path == "/pages":
                 coro = _prepare(head["ref"], head["files"])
             elif self.path == "/result":
