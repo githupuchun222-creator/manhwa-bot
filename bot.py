@@ -26,6 +26,7 @@ import bigfile
 import shop
 import broadcast
 import pdf_utils
+import relay
 import uz_translate
 from config import BASE_DIR, BOT_SUFFIX, BOT_TOKEN, OWNER_ID
 from image_editor import add_mark, render_translation
@@ -1688,7 +1689,8 @@ def _with_covers(pages: list[bytes]) -> list[bytes]:
 async def _process_pdf(update: Update | None, context: ContextTypes.DEFAULT_TYPE,
                        pdf_bytes: bytes, status_msg, chat_id: int | None = None,
                        src_name: str | None = None, ref: str | None = None,
-                       rendered: list[bytes] | None = None) -> None:
+                       rendered: list[bytes] | None = None, relay_ref: str | None = None,
+                       relay_total: int = 0) -> None:
     """PDF bobni to'liq tarjima qilib, BITTA PDF qilib qaytaradi (<= 50 MB).
 
     Avval har sahifa alohida rasm bo'lib yuborilardi - foydalanuvchi bitta
@@ -1699,13 +1701,15 @@ async def _process_pdf(update: Update | None, context: ContextTypes.DEFAULT_TYPE
         doc = update.message.document
         src_name = (getattr(doc, "file_name", None) or "bob.pdf").rsplit(".", 1)[0]
     job = time.strftime("%Y%m%d-%H%M%S")
-    _archive(job, "kirish.pdf", pdf_bytes)
-
-    try:
-        total = await asyncio.to_thread(pdf_utils.page_count, pdf_bytes)
-    except pdf_utils.PdfError as exc:
-        await status_msg.edit_text(str(exc))
-        return
+    if relay_ref:       # rele (relay.py): sahifalarni server tayyorlagan, arxiv ham serverda
+        total = relay_total
+    else:
+        _archive(job, "kirish.pdf", pdf_bytes)
+        try:
+            total = await asyncio.to_thread(pdf_utils.page_count, pdf_bytes)
+        except pdf_utils.PdfError as exc:
+            await status_msg.edit_text(str(exc))
+            return
 
     # tayyor sahifalarda juda uzun PDF sahifa bo'laklarga bo'lingan bo'lishi mumkin (pdf_utils.MAX_TILES)
     limit = min(total, MAX_PDF_PAGES * (pdf_utils.MAX_TILES if rendered else 1))
@@ -1725,8 +1729,9 @@ async def _process_pdf(update: Update | None, context: ContextTypes.DEFAULT_TYPE
         return
     # Sahifa chegarasi pufakchani kesib o'tgan bo'lsa - chegara bo'sh joyga suriladi
     try:
-        fixed = await asyncio.to_thread(pdf_utils.reslice, [p[2] for p in pages])
-        pages = [(n, t, j) for (n, t, _), j in zip(pages, fixed)]
+        if not relay_ref:                   # relede server allaqachon qilgan
+            fixed = await asyncio.to_thread(pdf_utils.reslice, [p[2] for p in pages])
+            pages = [(n, t, j) for (n, t, _), j in zip(pages, fixed)]
     except Exception:
         logger.exception("Sahifalarni qayta kesib bo'lmadi - asl holicha")
 
@@ -1778,16 +1783,9 @@ async def _process_pdf(update: Update | None, context: ContextTypes.DEFAULT_TYPE
         out_pages = await asyncio.to_thread(
             lambda: [add_mark(p, PAGE_MARK, PDF_JPEG_QUALITY) if i % 2 else p
                      for i, p in enumerate(out_pages)])
-    out_pages = _with_covers(out_pages)
-    fitted, size_note = await asyncio.to_thread(pdf_utils.fit_size, out_pages)
-    result_pdf = await asyncio.to_thread(pdf_utils.build_pdf, fitted)
-    _archive(job, "natija.pdf", result_pdf)
-    elapsed = int(time.time() - t0)
-
-    caption = ((f"🧾 Buyurtma {ref}\n" if ref else "") +
-               f"Tarjima tayyor: {limit} sahifa, {texts} ta matn.\n"
-               f"Hajm: {len(result_pdf) / 1024 / 1024:.1f} MB ({size_note}), "
-               f"vaqt: {elapsed // 60}:{elapsed % 60:02d}.")
+    head = ((f"🧾 Buyurtma {ref}\n" if ref else "") +
+            f"Tarjima tayyor: {limit} sahifa, {texts} ta matn.\n")
+    caption = ""
     if failed:
         caption += f"\nTarjima qilinmagan sahifalar (aslicha qoldi): {', '.join(map(str, failed))}"
     # Ochiq hisobot: nimaga ishonish mumkin, nimani ko'rib chiqish kerak.
@@ -1809,6 +1807,20 @@ async def _process_pdf(update: Update | None, context: ContextTypes.DEFAULT_TYPE
                     notes.replace("\n", " | "))
         if admins.is_admin(chat_id):
             caption += notes
+    tail = caption
+    if relay_ref:       # natija PDF'ni server yasaydi - noutbukdan faqat o'zgargan bo'laklar ketadi
+        await _edit_status(status_msg, "Natija serverga berilmoqda...")
+        mb = await relay.upload(relay_ref, [p[2] for p in pages], out_pages, head, tail, int(time.time() - t0))
+    else:
+        out_pages = _with_covers(out_pages)
+        fitted, size_note = await asyncio.to_thread(pdf_utils.fit_size, out_pages)
+        result_pdf = await asyncio.to_thread(pdf_utils.build_pdf, fitted)
+        _archive(job, "natija.pdf", result_pdf)
+        mb = len(result_pdf) / 1024 / 1024
+        elapsed = int(time.time() - t0)
+        caption = head + (f"Hajm: {mb:.1f} MB ({size_note}), "
+                          f"vaqt: {elapsed // 60}:{elapsed % 60:02d}.") + tail
+    elapsed = int(time.time() - t0)
 
     t_ready = time.time()                   # yuborish kechikishini o'lchash: tartib kutish va yuklash alohida (2026-10-19)
     turn = _turn_var.get()
@@ -1820,7 +1832,7 @@ async def _process_pdf(update: Update | None, context: ContextTypes.DEFAULT_TYPE
         await shop.wait_turn(wj, status_msg)
     await _edit_status(status_msg, "Yuborilmoqda...")
     t_send = time.time()
-    for attempt in range(4):
+    for attempt in range(0 if relay_ref else 4):
         try:
             sent = await context.bot.send_document(
                 chat_id=chat_id,
@@ -1836,12 +1848,14 @@ async def _process_pdf(update: Update | None, context: ContextTypes.DEFAULT_TYPE
         except RetryAfter as exc:
             await asyncio.sleep(_flood_wait(exc, chat_id) + 1)
     else:
-        raise TelegramError("Telegram faylni qabul qilmadi (ko'p urinishdan keyin)")
+        if not relay_ref:
+            raise TelegramError("Telegram faylni qabul qilmadi (ko'p urinishdan keyin)")
+        sent, caption = await relay.send(relay_ref, chat_id, f"{src_name} (o'zbekcha).pdf", ref)
+        _mark_delivered(sent, caption)
     logger.info("Yuborish: tartib kutish %.1f s, yuklash %.1f s (%.1f MB)",
-                t_send - t_ready, time.time() - t_send, len(result_pdf) / 2**20)
+                t_send - t_ready, time.time() - t_send, mb)
     await _edit_status(status_msg, "Tayyor ✅")
-    logger.info("PDF yuborildi: %d sahifa, %.1f MB, %d sek",
-                limit, len(result_pdf) / 1024 / 1024, elapsed)
+    logger.info("PDF yuborildi: %d sahifa, %.1f MB, %d sek", limit, mb, elapsed)
 
 
 async def _process_photo(update: Update, context: ContextTypes.DEFAULT_TYPE, status_msg) -> None:

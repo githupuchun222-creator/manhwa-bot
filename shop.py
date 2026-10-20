@@ -1195,12 +1195,17 @@ async def run_pool_chapter(bot, job: dict) -> dict:
             B._flood_wait(exc, d["chat"])
         except TelegramError:
             pass
-        pages = await _load_pages(ctx, d["files"])
-        if not pages:
-            raise RuntimeError("sahifa topilmadi")
-        pdf = B.pdf_utils.build_pdf(pages[:_page_cap()])
-        await B._process_pdf(None, ctx, pdf, status, chat_id=d["chat"], src_name=d["name"], ref=d["order"],
-                                rendered=_rendered(pages, d["files"]))
+        if B.relay.CLIENT:     # yuklash/yuborish serverda (relay.py): noutbuk Telegram'dan fayl olmaydi
+            pages, total = await B.relay.fetch(job["ref"], d["files"])
+            await B._process_pdf(None, ctx, b"", status, chat_id=d["chat"], src_name=d["name"], ref=d["order"],
+                                 rendered=pages, relay_ref=job["ref"], relay_total=total)
+        else:
+            pages = await _load_pages(ctx, d["files"])
+            if not pages:
+                raise RuntimeError("sahifa topilmadi")
+            pdf = B.pdf_utils.build_pdf(pages[:_page_cap()])
+            await B._process_pdf(None, ctx, pdf, status, chat_id=d["chat"], src_name=d["name"], ref=d["order"],
+                                 rendered=_rendered(pages, d["files"]))
     except asyncio.CancelledError:
         raise
     except Exception as exc:
