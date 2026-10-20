@@ -40,6 +40,10 @@ def _get():
             opt.intra_op_num_threads = int(os.getenv("LAMA_THREADS", "0")) or max(
                 2, min(6, (os.cpu_count() or 4) // 2))
             opt.log_severity_level = 3
+            # Bo'sh oqimlar aylanib kutmasin: aks holda LaMa tugagach ham yadrolarni band qilib,
+            # yonidagi OCR/chizish (ikkinchi bob) sekinlashadi. LAMA_SPIN=1 - eskicha.
+            if os.getenv("LAMA_SPIN", "0") != "1":
+                opt.add_session_config_entry("session.intra_op.allow_spinning", "0")
             _session = ort.InferenceSession(str(MODEL), sess_options=opt, providers=["CPUExecutionProvider"])
             logger.info("LaMa modeli yuklandi")
         except Exception as exc:
