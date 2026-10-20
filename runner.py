@@ -395,8 +395,10 @@ async def main() -> None:
                     log.warning("Topshirilgan ishlar olinmadi: %s", pool._short(exc))
             got_direct = False
             # ketayotgan nusxa (restart.flag / 5 soat / yuqori daraja keldi) yangi xabar olmaydi - aks holda
-            # webhook bilan yangi qabul qiluvchi o'rtasida xabarlar bo'linib ketardi (2026-10-08)
-            if direct and not old:
+            # webhook bilan yangi qabul qiluvchi o'rtasida xabarlar bo'linib ketardi (2026-10-08).
+            # Asosiy (server) bundan mustasno (2026-10-20): uning o'rniga keyingi nusxa faqat bu chiqqach yonadi
+            # (systemd) - drenajda ham javob beradi, yangi boblar hovuz navbatida keyingi nusxani kutadi.
+            if direct and (not old or ROLE == "primary"):
                 try:
                     ups = await app.bot.get_updates(offset=tg_offset, timeout=8, allowed_updates=Update.ALL_TYPES)
                     for u in ups:

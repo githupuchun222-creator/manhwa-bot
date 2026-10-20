@@ -7,6 +7,8 @@ Wants=network-online.target docker.service
 WorkingDirectory=/opt/manhwa-bot4
 EnvironmentFile=/opt/manhwa-bot4/server/bot.env
 Environment=PYTHONIOENCODING=utf-8
+# glibc har oqimga alohida arena ochadi (4 yadro = 32 tagacha) - bo'shagan xotira qaytmay RSS shishadi (2026-10-20)
+Environment=MALLOC_ARENA_MAX=2
 ExecStart=/opt/manhwa-bot4/.venv/bin/python runner.py
 Restart=always
 RestartSec=5

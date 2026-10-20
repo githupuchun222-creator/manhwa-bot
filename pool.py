@@ -171,6 +171,16 @@ def on_battery() -> bool:
 # MAX_RSS_MB dan oshsa restart.flag qo'yiladi: runner qo'ldagi bobni TUGATIB chiqadi, run4.sh toza qayta yoqadi.
 MAX_RSS_MB = int(os.getenv("MAX_RSS_MB", "2500" if ROLE == "phone" else "0"))    # telefonda standart yoqiq
 _RESTART_FLAG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "restart.flag")
+# 2026-10-20 (server): RSS bir necha soniyada 2.6 -> 4.0 -> 3.1 GB sakraydi (bob cho'qqisi, sizish emas) - bitta
+# cho'qqi drenaj boshlardi, bot kuniga o'nlab marta 5-16 daqiqa jim turardi. Endi chegaradan RSS_GRACE soniya
+# UZLUKSIZ yuqori tursagina qayta yonadi. Telefonda (Termux tez o'ldiradi) - darhol.
+RSS_GRACE = int(os.getenv("RSS_GRACE", "0" if ROLE == "phone" else "600"))
+TRIM_EVERY = 30
+_rss = {"over": 0.0, "trim": 0.0}
+try:
+    _libc = ctypes.CDLL("libc.so.6")       # malloc_trim: bo'shatilgan xotirani tizimga qaytaradi (glibc)
+except OSError:
+    _libc = None
 
 
 def rss_mb() -> int:
@@ -184,9 +194,21 @@ def rss_mb() -> int:
 def _watch_rss() -> None:
     if not MAX_RSS_MB or os.path.exists(_RESTART_FLAG):
         return
+    now = time.time()
+    if _libc is not None and now - _rss["trim"] > TRIM_EVERY:
+        _rss["trim"] = now
+        try:
+            _libc.malloc_trim(0)
+        except Exception:
+            pass
     used = rss_mb()
-    if used > MAX_RSS_MB:
-        log.warning("Xotira %d MB (chegara %d) - ish tugagach toza qayta ishga tushadi", used, MAX_RSS_MB)
+    if used <= MAX_RSS_MB:
+        _rss["over"] = 0.0
+        return
+    _rss["over"] = _rss["over"] or now
+    if now - _rss["over"] >= RSS_GRACE:
+        log.warning("Xotira %d MB (chegara %d, %d s dan beri) - ish tugagach toza qayta ishga tushadi",
+                    used, MAX_RSS_MB, int(now - _rss["over"]))
         try:
             open(_RESTART_FLAG, "w").close()
         except OSError as exc:
