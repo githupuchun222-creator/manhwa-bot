@@ -1625,7 +1625,7 @@ async def _chapter_batch(pages, limit: int, budget: dict, status_msg, t0: float,
                 failed.append(num)
         progress["n"] += 1
         elapsed = int(time.time() - t0)
-        await _edit_status(status_msg, f"O'qilmoqda: {progress['n']}/{limit}-sahifa "
+        await _edit_status(status_msg, f"O'qilmoqda: {progress['n']}/{len(pages)}-sahifa "
                                        f"({elapsed // 60}:{elapsed % 60:02d} o'tdi)", soft=True)
 
     await asyncio.gather(*(read_one(i, num, jpeg) for i, (num, _total, jpeg) in enumerate(pages)))

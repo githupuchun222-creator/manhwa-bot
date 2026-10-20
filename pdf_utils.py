@@ -7,6 +7,7 @@ har bir sahifani alohida rasm sifatida tarjima qiladi.
 `pypdfium2` tanlangan: bitta wheel, tashqi dastur (poppler) talab qilmaydi.
 """
 import io
+import math
 import logging
 import os
 import threading
@@ -41,10 +42,10 @@ def _render_scale(width: float, height: float) -> float:
     matn o'qib bo'lmas darajada maydalashardi.
     """
     width, height = max(width, 1.0), max(height, 1.0)
-    scale = RENDER_WIDTH / width
-    if height * scale > RENDER_MAX_HEIGHT:
-        scale = RENDER_MAX_HEIGHT / height
-    return min(4.0, max(0.3, scale))
+    # Balandlik bu yerda cheklanmaydi - juda uzun sahifa render_pages da bo'laklarga bo'linadi.
+    # Avval eni kichraytirilardi: 195x14000 pt sahifa 279 px enda chizilib, tarjima harflari
+    # pikselli, o'qib bo'lmas chiqardi (foydalanuvchi skrinshoti, 2026-10-20).
+    return min(4.0, max(0.3, RENDER_WIDTH / width))
 
 
 def page_count(pdf_bytes: bytes) -> int:
@@ -82,16 +83,20 @@ def render_pages(pdf_bytes: bytes, max_pages: int = DEFAULT_MAX_PAGES):
                     try:
                         width, height = page.get_size()
                         scale = _render_scale(width, height)
-                        bitmap = page.render(scale=scale)
-                        image = bitmap.to_pil().convert("RGB")
+                        # RENDER_MAX_HEIGHT dan baland bo'lsa - teng bo'laklar (xotira uchun), har biri alohida rasm
+                        n = max(1, math.ceil(height * scale / RENDER_MAX_HEIGHT))
+                        step = height / n
+                        images = [page.render(scale=scale, crop=(0, height - (k + 1) * step, 0, k * step))
+                                  .to_pil().convert("RGB") for k in range(n)]
                     finally:
                         page.close()
-                buf = io.BytesIO()
-                image.save(buf, format="JPEG", quality=92)
-                logger.info(
-                    "PDF sahifa %d/%d chizildi: %dx%d", index + 1, total, image.width, image.height
-                )
-                yield index + 1, total, buf.getvalue()
+                for image in images:
+                    buf = io.BytesIO()
+                    image.save(buf, format="JPEG", quality=92)
+                    logger.info(
+                        "PDF sahifa %d/%d chizildi: %dx%d", index + 1, total, image.width, image.height
+                    )
+                    yield index + 1, total, buf.getvalue()
             except Exception as exc:
                 logger.warning("PDF %d-sahifani chizib bo'lmadi: %s", index + 1, exc)
                 continue
