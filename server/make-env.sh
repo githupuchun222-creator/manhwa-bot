@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 grep -vE '^(RUNNER_ROLE|PARALLEL_JOBS|TG_API_ID_OPT|TG_API_HASH_OPT|POOL_SLOTS|LAMA_THREADS|OCR_THREADS|CONTACT_USERNAME)=' ../phone/b4.env > bot.env
 cat >> bot.env <<EOT
 RUNNER_ROLE=primary
-CONTACT_USERNAME=Ibragimov_015
+CONTACT_USERNAME=sharofovsaid
 # 4 yadro / 8 GB: 2 ta bob bir vaqtda (har biri ~2-3 GB), LaMa 2 oqim, OCR 1 oqim - yadrolar bir-biriga xalaqit bermasin
 PARALLEL_JOBS=2
 POOL_SLOTS=2
