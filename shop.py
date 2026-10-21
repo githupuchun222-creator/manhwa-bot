@@ -193,7 +193,7 @@ def _ib(text: str, data: str) -> InlineKeyboardButton:
 
 def _owner() -> str:
     """Yozishma tugmasi kimga ochiladi (CONTACT_USERNAME - admin; bo'lmasa egasi)."""
-    return (os.getenv("CONTACT_USERNAME", "Ibragimov_015") or os.getenv("OWNER_USERNAME", "")).lstrip("@")
+    return (os.getenv("CONTACT_USERNAME", "") or os.getenv("OWNER_USERNAME", "")).lstrip("@")
 
 
 def _owner_line() -> str:

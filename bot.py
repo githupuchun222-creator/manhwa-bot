@@ -966,7 +966,7 @@ def _pay_btn() -> str:
 
 def _owner_name() -> str:
     """Yozishma tugmasi kimga ochiladi (CONTACT_USERNAME - admin; bo'lmasa egasi)."""
-    return (os.getenv("CONTACT_USERNAME", "Ibragimov_015") or os.getenv("OWNER_USERNAME", "")).lstrip("@")
+    return (os.getenv("CONTACT_USERNAME", "") or os.getenv("OWNER_USERNAME", "")).lstrip("@")
 
 
 def _owner_line() -> str:
