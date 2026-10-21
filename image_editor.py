@@ -1733,7 +1733,11 @@ def _widen_in_shape(shape, tbox) -> tuple[int, int, int, int]:
     ox, oy, fill = shape
     cy = min(max(int((tbox[1] + tbox[3]) / 2) - oy, 0), fill.shape[0] - 1)
     cx = min(max(int((tbox[0] + tbox[2]) / 2) - ox, 0), fill.shape[1] - 1)
-    row = fill[cy]
+    # 2026-10-21: faqat o'rta qator olinardi - dumaloq pufakchada yuqori/pastki qator chetdan chiqib ketardi
+    # (Ch.21 "BUNI QO'YING..." chap chiziq ustiga yozilgan). Endi quti balandligidagi HAMMA qatorda ichkari bo'lgan en.
+    r0 = min(max(tbox[1] - oy, 0), fill.shape[0] - 1)
+    r1 = min(max(tbox[3] - oy, r0 + 1), fill.shape[0])
+    row = fill[r0:r1].all(axis=0)
     if not row[cx]:
         return tbox
     a = b = cx

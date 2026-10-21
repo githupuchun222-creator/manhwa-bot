@@ -446,6 +446,8 @@ def fix_ocr_digits(text: str) -> str:
             return w
         return "".join(_DIGITISH.get(c, c) for c in w)
 
+    # "LYID" / "LVIO" = "LV10": V ba'zan Y, 1 va 0 esa I/O/D bo'lib o'qiladi (2026-10-21, "LIDGA YETDI" tarjima bo'lgan)
+    text = re.sub(r"\bL[VY]([IlOoD][0-9IlOoD]|[0-9][IlOoD])\b", lambda m: "LV." + "".join(_DIGITISH.get(c, c) for c in m.group(1)), text)
     text = re.sub(r"\b(LV|LVL)\.?\s*([0-9IlOoDSB]{1,3})\b",
                   lambda m: f"{m.group(1)}.{digits(re.match(r'.*', m.group(2)))}"
                   if re.search(r"\d", m.group(2)) or m.group(2) in ("I", "l") else m.group(0), text)
@@ -468,6 +470,9 @@ def fix_ocr_letters(text: str) -> str:
         return text
 
     def best(low: str, limit: float = 12.0) -> str | None:
+        # 2026-10-21: 12.0 da "DLNGEON" (dungeon 12.1), "NLPTIAL" (nuptial 13.5) tuzalmay qolardi. Asl so'z lug'atda
+        # YO'Q bo'lgandagina chaqiriladi, shuning uchun kamroq uchraydigan so'zga ham ishonsa bo'ladi.
+        limit = max(limit, 14.0) if low not in cost else limit
         found = None
         if "li" in low:                                   # "U" ba'zan "LI" bo'lib o'qiladi: "COLINTING" -> "COUNTING"
             cand = low.replace("li", "u")
@@ -502,7 +507,56 @@ def fix_ocr_letters(text: str) -> str:
                 return head.upper() + " I"
         return w
 
-    return re.sub(r"[A-Za-z]+", fix, text)
+    text = re.sub(r"[A-Za-z]+", fix, text)
+    # 2 harfli: "ABOUT LP" -> "UP", "REST OF LS" -> "US" (U yana L bo'lib o'qilgan)
+    text = re.sub(r"\bL([PS])\b", r"U\1", text) if text.isupper() else text
+    return _fix_letter_digits(text, cost)
+
+
+# Harf o'rnida raqam (2026-10-21, Ch.21 Rise of the Mushroom King): "HOL4 CRAP" -> tarjimada "HOL4 AHMOQ!",
+# "THE QUEEN 15 DEAD", "PEDPLE", "TECHNIDUE". fix_ocr_digits teskarisini qiladi (raqamli so'zda harf -> raqam);
+# bu yerda faqat lug'atda YO'Q katta harfli so'z o'zgaradi va natija lug'atdagi so'z bo'lishi shart.
+_LOOKALIKE = {"4": "YA", "1": "I", "5": "S", "0": "O", "8": "B", "6": "G", "D": "OQ"}
+
+
+def _fix_letter_digits(text: str, cost: dict) -> str:
+    def fix(m: re.Match) -> str:
+        w = m.group(0)
+        if len(w) < 3 or not w.isupper() or w.lower() in cost or sum(c.isalpha() for c in w) < 2:
+            return w
+        if re.fullmatch(r"(LV|LVL|X|HP|MP)?\d+[A-Z]?", w):          # LV10, 3RD, x10 - haqiqiy raqam
+            return w
+        pos = [i for i, c in enumerate(w) if c in _LOOKALIKE]
+        found = None
+        for k in (1, 2):
+            for sub in itertools.combinations(pos, k):
+                for rep in itertools.product(*(_LOOKALIKE[w[i]] for i in sub)):
+                    cand = list(w.lower())
+                    for i, r in zip(sub, rep):
+                        cand[i] = r.lower()
+                    cand = "".join(cand)
+                    if cost.get(cand, 99) < 14.0 and (found is None or cost[cand] < cost[found]):
+                        found = cand
+            if found:
+                return found.upper()
+        return w
+
+    text = re.sub(r"[A-Za-z0-9]+", fix, text)
+    # gap ichida yakka "15" = "IS": "THE QUEEN 15 DEAD". Oldida raqamli ot (CHAPTER 15, ROOM 15) yoki ketida
+    # o'lchov birligi (15 MINUTES) bo'lsa - haqiqiy raqam, tegilmaydi.
+    def is15(m: re.Match) -> str:
+        if m.group(1) in _NUM_NOUNS or m.group(2) in _NUM_UNITS:
+            return m.group(0)
+        return f"{m.group(1)} IS {m.group(2)}"
+
+    return re.sub(r"\b([A-Z]+) 15 ([A-Z]+)\b", is15, text)
+
+
+_NUM_NOUNS = {"CHAPTER", "ROOM", "FLOOR", "LEVEL", "LV", "LVL", "PAGE", "NO", "NUMBER", "STAGE", "EPISODE", "AGE",
+              "DAY", "PART", "WAVE", "ROUND", "TEAM", "SQUAD", "UNIT", "GATE", "ZONE", "AREA", "SECTOR", "TOP", "RANK",
+              "TOTAL", "ONLY", "ABOUT", "OVER", "UNDER", "AT", "IN", "ON", "FOR", "WITH", "LAST", "FIRST", "AND", "OR"}
+_NUM_UNITS = {"MINUTE", "MINUTES", "SECOND", "SECONDS", "HOUR", "HOURS", "DAY", "DAYS", "YEAR", "YEARS", "TIMES",
+              "METER", "METERS", "KM", "KG", "PEOPLE", "MEN", "GOLD", "COINS", "POINTS", "LEVELS", "FLOORS", "CM"}
 
 
 _WATERMARK = re.compile(
