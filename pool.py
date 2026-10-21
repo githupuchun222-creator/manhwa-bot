@@ -291,6 +291,11 @@ async def add(jobs: list[dict]) -> bool:
         await _post("add", json=jobs)
     except Exception as exc:
         log.warning("Hovuzga qo'yib bo'lmadi: %s", _short(exc))
+        if not isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
+            # javob kelmadi, lekin darvoza qo'shgan bo'lishi mumkin (M-5149, 2026-10-20: ReadTimeout, bob ikki
+            # marta tarjima qilindi) - chaqiruvchi o'z navbatiga qo'yishidan oldin hovuzdan olib tashlaymiz
+            for order in {j["data"]["order"] for j in jobs}:
+                await cancel(order)
         return False
     kick()
     return True
