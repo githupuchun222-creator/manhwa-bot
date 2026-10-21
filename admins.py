@@ -72,6 +72,14 @@ def pull_remote() -> None:
     try:
         data = _remote("GET")
         if data and "admins" in data:
+            local = _read_file() if ADMINS_FILE.exists() else {}
+            # darvozadagi nusxa ESKI bo'lsa (buyurtma raqami orqada) - mahalliy yangisini bosmaymiz: 2026-10-21 qayta
+            # yonishdan keyin seq orqaga qaytib M-5200/M-5201 ikki foydalanuvchiga berilgan, boblari yo'qolgan
+            if int(local.get("seq", 0)) > int(data.get("seq", 0)):
+                logging.getLogger(__name__).warning("Darvozadagi holat eski (seq %s < %s) - mahalliy nusxa yoziladi",
+                                                    data.get("seq"), local.get("seq"))
+                _remote("PUT", json.dumps(local).encode("utf-8"))
+                return
             _write_file(data)
     except Exception as exc:
         logging.getLogger(__name__).warning("Adminlar ro'yxati olinmadi: %s", exc)
@@ -157,6 +165,26 @@ def _pusher() -> None:
 _pusher_thread: list = []
 
 
+def _start_pusher() -> None:
+    if not _pusher_thread:
+        t = threading.Thread(target=_pusher, name="admins-push", daemon=True)
+        t.start()
+        _pusher_thread.append(t)
+
+
+def repush() -> None:
+    """.dirty turibdi, lekin yuborish navbatda yo'q - faylni O'ZGARTIRMASDAN qayta yuboradi. Oldin _save(_load())
+    oqimda chaqirilardi: o'qish va yozish orasida asosiy oqim yozgan buyurtma eski nusxa bilan bosilardi."""
+    if not ADMINS_URL or READONLY["on"]:
+        return
+    with _pending_cv:
+        if "data" in _pending or not _DIRTY.exists():
+            return
+        _pending["data"] = json.dumps(_read_file()).encode("utf-8")
+        _start_pusher()
+        _pending_cv.notify()
+
+
 def _save(data: dict) -> None:
     _write_file(data)
     if not ADMINS_URL or READONLY["on"]:
@@ -173,10 +201,7 @@ def _save(data: dict) -> None:
         except OSError:
             pass
         _pending["data"] = body
-        if not _pusher_thread:
-            t = threading.Thread(target=_pusher, name="admins-push", daemon=True)
-            t.start()
-            _pusher_thread.append(t)
+        _start_pusher()
         _pending_cv.notify()
 
 

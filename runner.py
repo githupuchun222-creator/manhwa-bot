@@ -320,7 +320,7 @@ async def main() -> None:
                     # To'g'ridan-to'g'ri rejimda MAHALLIY holat asosiy: yozilmay qolgani bo'lsa darvozaga yozamiz;
                     # pastdagi "qayta o'qish" bu rejimda ishlamasin (eski nusxa yangisini bosib ketardi)
                     if admins._DIRTY.exists():
-                        await asyncio.to_thread(lambda: admins._save(admins._load()))
+                        await asyncio.to_thread(admins.repush)
                     last_ok = time.time()
                 # Boshqa runner ishlagan (yoki bu qurilma uxlab turgan) bo'lsa holat o'zgargan - qayta o'qiymiz
                 resumed = standby and not above

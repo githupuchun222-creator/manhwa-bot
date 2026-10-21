@@ -430,6 +430,8 @@ def quick_record(user, files: list, kind: str) -> str:
     """
     data = _data()
     data["seq"] = int(data.get("seq", 0)) + 1
+    while f"M-{data['seq']:04d}" in data.get("orders", {}):   # raqam hech qachon takrorlanmasin (2026-10-21)
+        data["seq"] += 1
     ref = f"M-{data['seq']:04d}"
     orders = data.setdefault("orders", {})
     orders[ref] = {"ref": ref, "uid": user.id, "who": user.full_name or str(user.id),
@@ -1020,6 +1022,8 @@ async def _start_job(update: Update, context, draft: dict, nonce: str) -> None:
         cur["files"] = [f for g in groups[:n] for f in g]
     data["drafts"].pop(str(uid), None)
     data["seq"] = int(data.get("seq", 0)) + 1
+    while f"M-{data['seq']:04d}" in data.get("orders", {}):   # raqam hech qachon takrorlanmasin (2026-10-21)
+        data["seq"] += 1
     ref = f"M-{data['seq']:04d}"
     order = {"ref": ref, "uid": uid, "who": update.effective_user.full_name or str(uid),
              "username": update.effective_user.username or "", "title": cur.get("title", ""),
