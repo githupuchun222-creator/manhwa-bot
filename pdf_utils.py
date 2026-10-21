@@ -144,19 +144,22 @@ def reslice(pages: list[bytes]) -> list[bytes]:
 
     if len(pages) < 2:
         return pages
-    try:
-        imgs = [np.asarray(Image.open(io.BytesIO(p)).convert("RGB")) for p in pages]
-    except Exception:
-        return pages
-    changed = [False] * len(imgs)
+    # 2026-10-21: oldin BARCHA sahifalar birga yechilardi (1100x20000 sahifa ~66 MB, 66 sahifa >4 GB) -
+    # asosiy server va vps2 OOM bilan o'ldi, bob yo'qoldi. Endi bir vaqtda faqat qo'shni 2 sahifa xotirada.
     gray = lambda a: a.astype(np.float32) @ np.array([0.299, 0.587, 0.114], np.float32)
-    for i in range(len(imgs) - 1):
-        A, B = imgs[i], imgs[i + 1]
+    dec = lambda p: np.asarray(Image.open(io.BytesIO(p)).convert("RGB"))
+
+    def enc(im) -> bytes:
+        buf = io.BytesIO()
+        Image.fromarray(np.ascontiguousarray(im)).save(buf, format="JPEG", quality=95)
+        return buf.getvalue()
+
+    def fix(A, B):
         if A.shape[1] != B.shape[1] or A.shape[0] < 200 or B.shape[0] < 200:
-            continue
+            return A, B, False
         edge = 6
         if _uniform_rows(gray(A[-edge:])).all() or _uniform_rows(gray(B[:edge])).all():
-            continue                       # chegara bo'sh joydan o'tgan - hech narsa kesilmagan
+            return A, B, False             # chegara bo'sh joydan o'tgan - hech narsa kesilmagan
         need = max(24, int(A.shape[1] * 0.022))
         ha, hb = A.shape[0], B.shape[0]
         # 1) A ning pastki qismidan bo'sh tasma: dumini B ning boshiga o'tkazamiz
@@ -165,25 +168,29 @@ def reslice(pages: list[bytes]) -> list[bytes]:
         cut = _band(ua, span - 1, -1, -1, need)
         if cut is not None and hb + (span - cut) <= RENDER_MAX_HEIGHT:
             cut += ha - span
-            imgs[i], imgs[i + 1] = A[:cut], np.vstack([A[cut:], B])
-            changed[i] = changed[i + 1] = True
-            continue
+            return A[:cut], np.vstack([A[cut:], B]), True
         # 2) B ning boshidan bo'sh tasma: boshini A ning oxiriga o'tkazamiz
         span = min(int(hb * 0.45), 1600)
         ub = _uniform_rows(gray(B[:span]))
         cut = _band(ub, 0, span, 1, need)
         if cut is not None and ha + cut <= RENDER_MAX_HEIGHT:
-            imgs[i], imgs[i + 1] = np.vstack([A, B[:cut]]), B[cut:]
-            changed[i] = changed[i + 1] = True
+            return np.vstack([A, B[:cut]]), B[cut:], True
+        return A, B, False
+
     out = []
-    for p, im, ch in zip(pages, imgs, changed):
-        if not ch:
-            out.append(p)
-            continue
-        buf = io.BytesIO()
-        Image.fromarray(np.ascontiguousarray(im)).save(buf, format="JPEG", quality=95)
-        out.append(buf.getvalue())
-    moved = sum(changed)
+    moved = 0
+    try:
+        A, a_ch = dec(pages[0]), False
+        for i in range(1, len(pages)):
+            A, B, ch = fix(A, dec(pages[i]))
+            a_ch = a_ch or ch
+            out.append(enc(A) if a_ch else pages[i - 1])
+            moved += a_ch
+            A, a_ch = B, ch
+        out.append(enc(A) if a_ch else pages[-1])
+        moved += a_ch
+    except Exception:
+        return pages
     if moved:
         logger.info("Sahifa chegaralari surildi: %d ta sahifa qayta kesildi", moved)
     return out
