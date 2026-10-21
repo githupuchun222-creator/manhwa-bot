@@ -84,7 +84,9 @@ _loop = None
 _bot = None
 
 
-def busy(max_age: int = 3600) -> bool:
+# 2026-10-21: 3600 edi - vps2 bobni olib OOM bilan o'lgach, asosiy server drenajda shu yozuvni 1 soat kutib,
+# 30+ daqiqa hech ish qilmadi. vps2 endi faqat <=80 MB bob oladi (eng kattasi ~12 daqiqa) - 25 daqiqa yetadi.
+def busy(max_age: int = 1500) -> bool:
     """Yordamchiga berilgan, hali yuborilmagan yangi bob bormi. Server qayta yonsa _store yo'qoladi (yordamchi
     ishi 410 bilan behuda ketadi, 2026-10-20) - drenaj shularni ham kutadi; eski (osilib qolgan) yozuv kutilmaydi."""
     return any(time.time() - st["t"] < max_age for st in _store.values())
