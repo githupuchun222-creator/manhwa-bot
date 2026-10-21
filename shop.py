@@ -1233,7 +1233,8 @@ async def run_pool_chapter(bot, job: dict) -> dict:
 # tartib kutish chegarasi (s); 0 - o'chiq. 2026-10-20: 600 -> 3 soat - 260 MB li bob 80+ daqiqa ishlanadi, keyingi bob
 # 10 daqiqadan keyin oldinga o'tib ketardi (M-5116#7 #6 dan oldin). Faqat ijarasi tirik (ishlanayotgan) bob kutiladi.
 TURN_WAIT = int(os.getenv("TURN_WAIT", "10800"))
-REQUEUE_WAIT = int(os.getenv("REQUEUE_WAIT", "1200"))
+# 2026-10-21: 1200 -> 300 - kutayotgan boblar o'rinlarni band qilib, navbatga qaytgan bobni hech kim olmay qolardi
+REQUEUE_WAIT = int(os.getenv("REQUEUE_WAIT", "300"))
 
 
 async def wait_turn(job: dict, status) -> None:
@@ -1262,7 +1263,8 @@ async def wait_turn(job: dict, status) -> None:
             # 2026-10-20: yordamchi (vps2) xatosi/qayta yonish sabab navbatga QAYTGAN oldingi bob ham kutiladi (M-5123#10
             # #9 dan oldin ketdi), lekin ko'pi bilan REQUEUE_WAIT - hamma o'rin kutayotgan boblar bilan band qolmasin
             requeued = (r.get("tries") or 0) > 0 and r.get("state") in ("queued", "work") and not working
-            if working or (requeued and time.time() - t0 < REQUEUE_WAIT):
+            # drenajda navbatdagi bobni hech kim olmaydi (yordamchi ham /ready=503) - kutish qulf bo'lardi (M-5201#6/#7 21 daq)
+            if working or (requeued and not pool.state["draining"] and time.time() - t0 < REQUEUE_WAIT):
                 ahead = True
                 break
         if not ahead:
