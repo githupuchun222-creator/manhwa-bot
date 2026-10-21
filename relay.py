@@ -185,6 +185,12 @@ class _H(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
+    def do_GET(self):
+        # yordamchi bob olishdan OLDIN so'raydi: drenajda /pages 503 qaytaradi, olingan bob esa urinishni yeydi
+        self.send_response(503 if self.path == "/ready" and DRAINING["on"] else 200 if self.path == "/ready" else 404)
+        self.send_header("content-length", "0")
+        self.end_headers()
+
     def do_POST(self):
         if self.headers.get("x-key") != KEY:
             self.send_response(403)
@@ -251,6 +257,15 @@ async def _call(path: str, head: dict, blobs: list[bytes] = ()) -> tuple[dict, l
         # tarmoq xatosi kabi: bob navbatga qaytadi va boshqa runner (yoki keyingi urinish) bajaradi
         raise ConnectionError(f"rele {path} HTTP {r.status_code}: {h.get('error', '')}")
     return h, b
+
+
+async def ready() -> bool:
+    """Server yangi bob qabul qiladimi (qayta yonish drenajida emas). Javob bo'lmasa ham True - tarmoq xatosini claim o'zi ko'radi."""
+    try:
+        async with httpx.AsyncClient(timeout=10) as c:
+            return (await c.get(URL + "/ready")).status_code != 503
+    except Exception:
+        return True
 
 
 async def fetch(ref: str, files: list[dict]) -> tuple[list[bytes], int]:

@@ -23,6 +23,7 @@ import time
 import httpx
 
 import admins
+import relay
 
 log = logging.getLogger("pool")
 
@@ -365,6 +366,10 @@ async def _step(bot, slots: int, execute, apply) -> None:
     # qilishi kerak) - batareyadagi, telefon hotspotidagi noutbuk har buyurtmadan bitta bobni DARHOL olib,
     # 11 daqiqa (eng ko'pi 33) ushlagan; GitHub xuddi shunday bobni ~7 daqiqada yetkazgan (bir kunda 67 ta bob).
     # Endi sekin qabul qiluvchi natijalarni oladi (n=0), bobni esa faqat SLOW_WAIT dan beri hech kim olmasa.
+    if free and relay.CLIENT and not await relay.ready():   # 2026-10-21: drenajdagi serverdan bob olib urinishni yemaslik
+        if not receiver:
+            return
+        free = 0
     if free and (time.time() < _hold["until"] or (SLOW_WAIT and slow() and not await _overflow())):
         if not receiver:
             return
