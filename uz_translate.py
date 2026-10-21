@@ -548,7 +548,9 @@ def _rest(k: int, model: str, code: int | None, body: str) -> None:
     elif code in (400, 403, 404):
         wait = 24 * 3600           # bu kalitga model yopiq / so'rov shakli mos emas
     else:
-        wait = 300                 # 503 band, 500, vaqt tugadi - har sahifada 25 s kutmaylik
+        # 503 band, 500, vaqt tugadi. 2026-10-21: 300 edi - band cho'qqida HAMMA model 5 daqiqa chetda qolib,
+        # bobning yarmi Google'ga tushardi (4 bobdan 1 tasi); Google band cho'qqisi odatda qisqa.
+        wait = 45
     _cooldown[(k, model)] = time.time() + wait
 _GEMINI_SYSTEM = """You are a professional manhwa (Korean webcomic) translator into Uzbek.
 Translate each speech bubble into natural, lively, CONVERSATIONAL Uzbek (Latin script, use o' and g').
@@ -599,6 +601,12 @@ character/place/guild name in these lines; {} if none)."""
 # boshlanishi boshqasining ismlar lug'atini tozalab yuborardi (foydalanuvchi: "4 ta yuborilsa
 # qo'shib yubormoqda"). Endi holat contextvar'da: har ish o'z holatini oladi, uning ichidagi
 # oqimlar (asyncio.to_thread) esa aynan shu holatni ko'radi.
+# 2026-10-21 (egasi: "sifatli va maksimal tez"): AI band bo'lsa darhol Google emas - bo'shashini kutadi.
+# Budjet BOB uchun umumiy: Google uzoq yotsa bob cheksiz cho'zilmaydi (eng ko'pi AI_WAIT soniya qo'shiladi);
+# tarjima quvurda ketgani uchun bu vaqtda OCR/chizish to'xtamaydi.
+AI_WAIT = int(os.getenv("AI_WAIT", "240"))
+
+
 class _State:
     def __init__(self) -> None:
         self.ctx: list[str] = []          # oldingi sahifa(lar)ning oxirgi gaplari - kontekst
@@ -606,6 +614,7 @@ class _State:
         self.series = ""                  # seriya lug'ati kaliti
         self.stats = {"ai": 0, "google": 0}
         self.last = 0.0
+        self.wait = AI_WAIT               # Google'ga tushishdan oldin AI bo'shashini kutish budjeti (soniya, bob uchun)
 
 
 _state_var: contextvars.ContextVar = contextvars.ContextVar("tarjima_holati", default=None)
@@ -1094,10 +1103,25 @@ def stats() -> dict:
 
 def reset_stats() -> None:
     _S().stats = {"ai": 0, "google": 0}
+    _S().wait = AI_WAIT
+
+
+def _wait_ai() -> bool:
+    """AI (biror kalit+model) bo'shashini bob budjeti doirasida kutadi. Bo'shasa True."""
+    while not _gemini_ready() and _S().wait > 0:
+        nxt = min(_cooldown.get((k, spec.partition(":")[0]), 0)
+                  for spec in GEMINI_MODELS for k in range(len(GEMINI_KEYS)))
+        nap = max(1.0, min(nxt - time.time(), _S().wait, 15))
+        time.sleep(nap)
+        _S().wait -= nap
+    return _gemini_ready()
 
 
 def _polish_part(english: list[str], drafts: list[str]) -> list[str]:
     part = _gemini(english, drafts)
+    while part is None and not _gemini_ready() and _S().wait > 0 and _wait_ai():
+        logger.info("AI band edi - bo'shadi, qayta so'raladi (kutish budjeti %d s qoldi)", _S().wait)
+        part = _gemini(english, drafts)
     if part is None and len(english) > 20 and _gemini_ready():
         half = len(english) // 2
         return _polish_part(english[:half], drafts[:half]) + _polish_part(english[half:], drafts[half:])
