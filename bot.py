@@ -70,14 +70,18 @@ async def download_file(tg_bot, file_id: str, size: int = 0) -> bytes:
     internetda 17 MB fayl 60 s ga sig'may, kechqurun 4 ta ish shunday yiqildi).
     """
     started = time.time()
-    if size > MAX_DOWNLOAD_BYTES:
+    # O'z Bot API (TG_LOCAL) 2 GB gacha beradi va faylni diskka yozadi: o'lchov 27.5 MB = 8.8 s, MTProto esa
+    # o'rtacha 1.8 MB/s (ba'zan 0.36). Shuning uchun katta fayl ham avval oddiy yo'l, MTProto - zaxira (2026-10-21).
+    if size > MAX_DOWNLOAD_BYTES and not TG_LOCAL:
         data = await bigfile.download(file_id, BOT_TOKEN, size)
         shop.pool.note_download(len(data), time.time() - started)
         return data
     last: Exception | None = None
     for attempt in range(1, DOWNLOAD_TRIES + 1):
         try:
-            tg_file = await tg_bot.get_file(file_id, read_timeout=60, connect_timeout=30, pool_timeout=30)
+            # o'z Bot API katta faylni get_file ICHIDA yuklaydi - vaqt ko'proq kerak
+            tg_file = await tg_bot.get_file(file_id, read_timeout=300 if TG_LOCAL else 60,
+                                            connect_timeout=30, pool_timeout=30)
             buf = io.BytesIO()
             await tg_file.download_to_memory(out=buf, read_timeout=180, connect_timeout=30, pool_timeout=30)
             # chala kelgan fayl (hajmi Telegram aytganidan kam) - xato deb qayta uriniladi (bigfile.py, 2026-10-16)

@@ -859,9 +859,10 @@ def _min_readable() -> int:
     return max(10, int(getattr(_style, "page_w", 1100) * 0.011))
 
 
-def _note_tiny(size: int) -> None:
+def _note_tiny(size: int, start: int = 999) -> None:
     rep_ = getattr(_style, "report", None)
-    if rep_ is not None and size < _min_readable():
+    # asl yozuv o'zi mayda bo'lsa (start < chegara) - bu "sig'madi" emas: M-5116 da 552 ta soxta ogohlantirish
+    if rep_ is not None and size < min(_min_readable(), start):
         rep_["tiny"] = rep_.get("tiny", 0) + 1
 
 
@@ -893,7 +894,7 @@ def _fit_text(draw: ImageDraw.ImageDraw, text: str, box_w: int, box_h: int,
             lines = _wrap(draw, text, font, box_w, hard)
             widest = max(draw.textlength(ln, font=font) for ln in lines)
             if widest <= box_w and _line_height(font) * len(lines) <= box_h:
-                _note_tiny(size)
+                _note_tiny(size, start)
                 return font, lines
             size -= 1
     # Sig'magan holat (balandlik yetmaydi): eng kichik shriftda yoziladi, eniga baribir toshmaydi;
@@ -1167,7 +1168,7 @@ def _draw_in_shape(draw, shape, text_box, text: str, color, max_size: int | None
             sp = [b - a for a, b in spans]
             if any(w < 0.4 * max(ws) and q < 0.55 * max(sp) for w, q in zip(ws[:-1], sp[:-1])):
                 continue
-        _note_tiny(size)
+        _note_tiny(size, start)
         for i, (line, (a, b)) in enumerate(zip(lines, spans)):
             w = draw.textlength(line, font=font)
             x = min(max(cx - w / 2, a), b - w)
