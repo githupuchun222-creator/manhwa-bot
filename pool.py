@@ -477,7 +477,8 @@ async def _exec(bot, job: dict, execute) -> None:
         # Bu qurilmaning tarmog'i yomon ekan - o'sha bobni o'zi qayta tortib olmasligi uchun biroz dam oladi.
         _running.pop(ref, None)
         # rele 503 = asosiy server qayta yonmoqda (~1 daqiqa) - tarmoq yomon emas, uzoq dam shart emas
-        hold = 60 if "HTTP 503" in str(exc) else RELEASE_HOLD
+        # yordamchida (rele orqali) uzilish deyarli doim asosiy server qayta yongani - 10 daqiqa kutish bekor (2026-10-21)
+        hold = 60 if "HTTP 503" in str(exc) or relay.CLIENT else RELEASE_HOLD
         _hold["until"] = time.time() + hold
         log.warning("%s: tarmoq uzildi (%s) - bob navbatga qaytadi, %d s yangi bob olinmaydi", ref, exc, hold)
         return
