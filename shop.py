@@ -1164,6 +1164,15 @@ async def pool_quick(job: dict) -> bool:
 _key_busy: list[int] = []          # hozir ishlayotgan boblar egallagan Gemini kalit raqamlari
 
 
+def _fail_reason(exc: Exception) -> str:
+    """Mijoz nima qilishini bilsin (2026-10-22: parolli PDF va Telegram bermagan fayl "kutilmagan xatolik" edi)."""
+    if isinstance(exc, B.pdf_utils.PdfError):
+        return f"{exc} Bu bob tarjima qilinmadi."
+    if "temporarily unavailable" in str(exc) or "to'liq yuklanmadi" in str(exc):
+        return "Telegram bu faylni bermadi - faylni qaytadan yuboring. Bu bob tarjima qilinmadi."
+    return "Kutilmagan xatolik - bu bob tarjima qilinmadi."
+
+
 async def run_pool_chapter(bot, job: dict) -> dict:
     """Hovuzdan olingan bitta bobni tarjima qilib yuboradi (istalgan runnerda)."""
     from types import SimpleNamespace
@@ -1218,7 +1227,7 @@ async def run_pool_chapter(bot, job: dict) -> dict:
             raise pool.Release(pool._short(exc) or type(exc).__name__) from exc
         logger.exception("%s: bob bajarilmadi", job["ref"])
         if not wjob["delivered"]:
-            await B._edit_status(status, "\u26a0\ufe0f Kutilmagan xatolik - bu bob tarjima qilinmadi." + B._fail_note())
+            await B._edit_status(status, "\u26a0\ufe0f " + _fail_reason(exc) + B._fail_note())
         return {"ok": wjob["delivered"], "res": wjob.get("res"), "names": sink, "why": pool._short(exc)}
     finally:
         B._job_var.reset(t1)

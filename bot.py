@@ -99,6 +99,9 @@ async def download_file(tg_bot, file_id: str, size: int = 0) -> bytes:
             return await bigfile.download(file_id, BOT_TOKEN, size)
         except Exception as exc:
             logger.warning("MTProto orqali ham olinmadi: %s", exc)
+        finally:
+            if TG_LOCAL:      # zaxira ulanish bo'sh turib uzilib-ulanmasin (runner warm_up qilmaydi)
+                await bigfile._reset()
     raise last
 
 

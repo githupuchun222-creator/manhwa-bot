@@ -160,7 +160,7 @@ async def _helper_main() -> None:
     admins.READONLY["on"] = True
     app = bot._build_app(bot.BOT_TOKEN)
     await app.initialize()
-    if pool.WORK:
+    if pool.WORK and not bot.TG_LOCAL:
         asyncio.create_task(bot.bigfile.warm_up(bot.BOT_TOKEN))
     log.info("Bot uyg'ondi (faqat yordamchi): @%s", app.bot.username)
     for note in _KEYS_NOTE:
@@ -210,7 +210,9 @@ async def main() -> None:
     worker = asyncio.create_task(bot._queue_worker())
     if bot.relay.SERVE:    # server: noutbuk yordamchisi uchun yuklash/yuborish (relay.py)
         bot.relay.serve(app.bot)
-    if pool.WORK:          # katta fayllar uchun MTProto ulanishi oldindan (birinchi fayl ~10 s tezroq)
+    # katta fayllar uchun MTProto ulanishi oldindan (birinchi fayl ~10 s tezroq). O'z Bot API (TG_LOCAL) bo'lsa
+    # MTProto faqat zaxira - doimiy ulanish kuniga ~200 marta uzilib-ulanib logni to'ldirardi (2026-10-22)
+    if pool.WORK and not bot.TG_LOCAL:
         asyncio.create_task(bot.bigfile.warm_up(bot.BOT_TOKEN))
     log.info("Bot uyg'ondi: @%s", app.bot.username)
     for note in _KEYS_NOTE:

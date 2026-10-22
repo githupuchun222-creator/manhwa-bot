@@ -50,12 +50,19 @@ def _render_scale(width: float, height: float) -> float:
     return min(4.0, max(0.3, RENDER_WIDTH / width))
 
 
+def _open_error(exc: Exception) -> "PdfError":
+    # FPDF_ERR_PASSWORD = 4: parolli PDF (M-5629, 2026-10-22) - mijoz "kutilmagan xatolik" emas, sababini ko'rsin
+    if getattr(exc, "err_code", None) == 4:
+        return PdfError("PDF parol bilan himoyalangan - parolsiz PDF yoki rasmlarni yuboring.")
+    return PdfError(f"PDF ochilmadi: {exc}")
+
+
 def page_count(pdf_bytes: bytes) -> int:
     with _PDFIUM:
         try:
             doc = pdfium.PdfDocument(pdf_bytes)
         except Exception as exc:
-            raise PdfError(f"PDF ochilmadi: {exc}") from exc
+            raise _open_error(exc) from exc
         try:
             return len(doc)
         finally:
@@ -71,7 +78,7 @@ def render_pages(pdf_bytes: bytes, max_pages: int = DEFAULT_MAX_PAGES):
         try:
             doc = pdfium.PdfDocument(pdf_bytes)
         except Exception as exc:
-            raise PdfError(f"PDF ochilmadi: {exc}") from exc
+            raise _open_error(exc) from exc
         total = len(doc)
 
     try:
