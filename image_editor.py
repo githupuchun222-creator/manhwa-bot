@@ -1923,6 +1923,26 @@ def render_translation(image_bytes: bytes, translations: list[dict], quality: in
                 # joyida, tarjimasiz qoladi - rasm buzilmaydi, sekin LaMa o'chirishga vaqt ketmaydi
                 continue
 
+        if FONT_STYLES and RENDER_V2:
+            # Oldingi blok bo'yagan pufakcha ichidagi blok (2026-10-22, "...SCARS." + "AFTER ALL..."): pufakcha
+            # allaqachon tozalangani uchun u "tekis fon" bo'lib qolar va birlashtirilmay birinchisining USTIGA
+            # yozilardi. Endi o'sha pufakchaning ishi bo'ladi - _merge_same_bubble ikkalasini bitta matn qiladi.
+            # Faqat bevosita davomi (oralig'i bir qatordan kam): uzoqroq blok qorbobo shaklli pufakchaning
+            # boshqa qismida - eski yo'lda o'z joyida toza chiziladi.
+            host = next((j for j in jobs if j[0] == "bubble" and j[5] is not None and line_h
+                         and max(j[6][1], box[1]) - min(j[6][3], box[3]) < float(line_h)
+                         and min(j[6][2], box[2]) - max(j[6][0], box[0]) > 0.4 * min(j[6][2] - j[6][0], x2 - x1)
+                         and _box_in_shape(box, j[5]) >= 0.8), None)
+            if host is not None:
+                inside = _shape_in_box(host[5], box)
+                if _text_ink(arr[box[1]:box[3], box[0]:box[2]], host[2])[inside].sum() > 0.05 * max(
+                        1, _text_ink(orig[box[1]:box[3], box[0]:box[2]], host[2])[inside].sum()):
+                    _erase_ink(arr, box, host[2], inside)
+                jobs.append(("bubble", host[1], host[2], uzbek_text, max_size, host[5], box, upper,
+                             host[8], host[9], angle))
+                tboxes.append(box)
+                continue
+
         bg_color = _dominant_color(image.crop(box))
         ink_color = None
         if RENDER_V2:
