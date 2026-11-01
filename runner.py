@@ -8,8 +8,48 @@ Bot doim "uxlab" turadi. Oqim:
 Ish yo'q bo'lsa IDLE_EXIT soniyadan keyin o'zi o'chadi; GitHub'ning 6 soatlik
 chegarasidan oldin ham to'xtaydi (gate kerak bo'lsa yangisini yoqadi).
 """
+# Load the private, authenticated release before importing bot modules (VPS + GitHub fallback).
+def _aura_release_bootstrap():
+    import hashlib, json, os, sys, urllib.request
+    from pathlib import Path
+    base = Path(__file__).resolve().parent
+    local = base / 'local.env'
+    if local.exists():
+        for line in local.read_text().splitlines():
+            k, eq, v = line.strip().partition('=')
+            if eq and k and not k.startswith('#'): os.environ[k.strip()] = v.strip()
+    gate = os.getenv('GATE_URL', '').rstrip('/')
+    key = os.getenv('GATE_KEY', '')
+    if gate != 'https://manhwa-gate-4.compass-crm.workers.dev' or not key: return
+    try:
+        request = urllib.request.Request(gate + '/release', headers={'x-key': key, 'User-Agent': 'manhwa-release/1'})
+        with urllib.request.urlopen(request, timeout=20) as response:
+            release = json.loads(response.read(2 * 1024 * 1024))
+        files = release['files']
+        if not isinstance(files, dict) or not files or len(files) > 80: raise ValueError('Invalid release')
+        staged = []
+        for name, entry in files.items():
+            if Path(name).name != name or not name.endswith('.py'): raise ValueError('Invalid release path')
+            raw = entry['content'].encode('utf-8')
+            if hashlib.sha256(raw).hexdigest() != entry['sha256']: raise ValueError('Release checksum mismatch')
+            target = base / name
+            if target.exists() and hashlib.sha256(target.read_bytes()).hexdigest() == entry['sha256']: continue
+            compile(raw, str(target), 'exec')
+            staged.append((target, raw))
+        for target, raw in staged:
+            temporary = target.with_suffix('.release-tmp')
+            with temporary.open('wb') as out: out.write(raw); out.flush(); os.fsync(out.fileno())
+            os.replace(temporary, target)
+        if staged:
+            os.execv(sys.executable, [sys.executable, str(__file__), *sys.argv[1:]])
+    except Exception as exc:
+        print('Release update unavailable:', type(exc).__name__, flush=True)
+_aura_release_bootstrap()
+
 import asyncio
 import logging
+import json
+from gate_inbox import GateInbox
 import os
 import threading
 import time
@@ -233,6 +273,11 @@ async def main() -> None:
     # ularni boshidan boshlardi - bob ikki marta yuborilardi, xotira to'lib Android Termux'ni o'chirardi.
     resumed_jobs = not bot.shop.ENABLED
 
+    inbox = GateInbox(Path(__file__).with_name("gate-inbox.json"))
+    for pending_update in inbox.pending():
+        await app.update_queue.put(Update.de_json(pending_update, app.bot))
+    await app.update_queue.join()
+    inbox.complete([u["update_id"] for u in inbox.pending()])
     last_activity = time.time()
     headers = {"x-key": GATE_KEY}
     retired = False                    # zaxira: asosiy runner keldi - bo'shashi bilan o'chadi
@@ -272,6 +317,7 @@ async def main() -> None:
                 except Exception as exc:
                     log.warning("Yangi GitHub runner chaqirilmadi: %s", pool._short(exc))
             gate_ok = False
+            gate_delivery = None
             try:
                 if direct and time.time() - last_probe < GATE_PROBE_EVERY:
                     raise _SkipGate()
@@ -279,9 +325,13 @@ async def main() -> None:
                 # retire=1: gate bizni "ishlamayapti" deb biladi va kerak bo'lsa yangisini yoqadi
                 r = await c.post(f"{GATE_URL}/pending", headers=headers,
                                  params={"runner": "1", "retire": "1" if old else "0", "role": ROLE,
-                                         "standby": "1" if standby else "0"})
+                                         "standby": "1" if standby else "0", "lease": "1"})
                 r.raise_for_status()
                 items = r.json()
+                inbox.receive(items)
+                delivery_token = r.headers.get("x-delivery-token")
+                if delivery_token:
+                    gate_delivery = {"token": delivery_token, "ids": json.loads(r.headers.get("x-delivery-ids", "[]"))}
                 above = r.headers.get("x-retire") == "1"       # yuqori darajadagi runner tirik
                 # OSILGAN YORDAMCHI (2026-10-09): hovuz tekshiruvi BIR MARTA xato bersa (qisqa tarmoq uzilishi)
                 # GitHub o'zini butunlay "ketayotgan" deb belgilab, qaytib bob olmasdi - 40 ta bob bir soat
@@ -422,8 +472,18 @@ async def main() -> None:
                 except Exception as exc:
                     log.warning("Telegram'dan xabar olinmadi: %s", exc)
                     await asyncio.sleep(2)
-            for data in items:
+            durable_updates = inbox.pending()
+            for data in durable_updates:
                 await app.update_queue.put(Update.de_json(data, app.bot))
+            if durable_updates:
+                await app.update_queue.join()
+                inbox.complete([u["update_id"] for u in durable_updates])
+            if gate_delivery:
+                try:
+                    ack = await c.post(f"{GATE_URL}/pending/ack", headers=headers, json=gate_delivery)
+                    ack.raise_for_status()
+                except Exception as exc:
+                    log.warning("Gate acknowledgement delayed: %s", type(exc).__name__)
             # Xabar qabul qiluvchi - faqat kutishda bo'lmagan, navbatini kutmayotgan runner. Qolganlari
             # yordamchi: boblarni tarjima qiladi, lekin umumiy holatni (obuna, tarix) yozmaydi.
             receiver = not (standby or want_standby or waiting)
